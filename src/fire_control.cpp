@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <utility>
 
 namespace ballistics {
@@ -99,6 +100,9 @@ FireSolution solve_elevation(
     double                     tolerance_m,
     double                     target_altitude_m)
 {
+    if (muzzle_speed_ms <= 0.0)
+        throw std::invalid_argument("muzzle_speed_ms must be positive");
+
     // Upper search bound: 87° (3° below vertical).  Near-vertical shots
     // produce degenerate range behaviour under drag (range → 0) so we stop
     // just short of vertical to keep the bisection monotone.
@@ -171,6 +175,8 @@ void FireControlTable::build(
     int    num_samples,
     double target_altitude_m)
 {
+    if (muzzle_speed_ms <= 0.0)
+        throw std::invalid_argument("muzzle_speed_ms must be positive");
     if (num_samples < 2) num_samples = 2;
 
     constexpr double kLoSearch = -45.0;
@@ -257,7 +263,13 @@ FireSolution FireControlTable::lookup(double range_m) const {
     const Entry& hi = *it;
     const Entry& lo = *std::prev(it);
 
-    const double t = (range_m - lo.range_m) / (hi.range_m - lo.range_m);
+    const double span = hi.range_m - lo.range_m;
+    // Guard against duplicate range entries (can occur due to floating-point
+    // rounding in the sweep).  Return the lower entry directly.
+    if (span == 0.0)
+        return FireSolution{lo.elevation_deg, lo.flight_time_ms, true};
+
+    const double t = (range_m - lo.range_m) / span;
 
     return FireSolution{
         lo.elevation_deg  + t * (hi.elevation_deg  - lo.elevation_deg),
