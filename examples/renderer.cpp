@@ -21,7 +21,7 @@
 #include "raygui.h"
 
 #include <ballistics/ballistics.hpp>
-
+#include <ballistics/math/math_constants.hpp>
 #include <atomic>
 #include <chrono>
 #include <cmath>

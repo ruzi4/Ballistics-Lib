@@ -1,8 +1,10 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 4.0)
 project(BallisticsLib VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+set(PROJECT_NAME ballistics)
 
 # Default to Release for real-time performance
 if(NOT CMAKE_BUILD_TYPE)
@@ -25,7 +27,19 @@ FetchContent_MakeAvailable(nlohmann_json)
 # ---------------------------------------------------------------------------
 # Library target
 # ---------------------------------------------------------------------------
+
+set(BALLISTICS_INCLUDES
+    include/${PROJECT_NAME}/atmosphere.hpp
+    include/${PROJECT_NAME}/munition.hpp
+    include/${PROJECT_NAME}/trajectory.hpp
+    include/${PROJECT_NAME}/fire_control.hpp
+    include/${PROJECT_NAME}/ballistics.hpp
+    include/${PROJECT_NAME}/math/vec3.hpp
+    include/${PROJECT_NAME}/math/math_constants.hpp
+)
+
 set(BALLISTICS_SOURCES
+    ${BALLISTICS_INCLUDES}
     src/atmosphere.cpp
     src/munition.cpp
     src/trajectory.cpp
@@ -42,7 +56,11 @@ target_include_directories(ballistics
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(ballistics PUBLIC nlohmann_json::nlohmann_json)
+target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json)
+
+target_include_directories (${PROJECT_NAME}
+    PUBLIC include
+)
 
 # Aggressive optimisation flags for real-time performance
 target_compile_options(ballistics PRIVATE
