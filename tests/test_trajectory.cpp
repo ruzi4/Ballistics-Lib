@@ -435,6 +435,270 @@ static void test_altitude_varying_atmosphere() {
 }
 
 // ---------------------------------------------------------------------------
+// Fire control tests
+// ---------------------------------------------------------------------------
+static void test_fire_control_basic() {
+    SECTION("solve_elevation: low-angle solution lands at requested range");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed = 600.0;   // m/s
+    const double target_range = 500.0;   // m
+    const double az           = 0.0;     // due North
+
+    FireSolution sol = solve_elevation(sim,
+                                       LauncherOrientation{az},
+                                       target_range,
+                                       muzzle_speed);
+    CHECK(sol.valid);
+    CHECK(sol.elevation_deg > 0.0);
+    CHECK(sol.elevation_deg < 45.0);   // low-angle solution
+    CHECK(sol.flight_time_ms > 0.0);
+
+    // Verify the solution: re-simulate with the returned elevation angle
+    const double el = sol.elevation_deg * (3.14159265358979323846 / 180.0);
+    const double az_rad = az * (3.14159265358979323846 / 180.0);
+
+    ProjectileState initial;
+    initial.position = {};
+    initial.velocity = muzzle_speed * Vec3{std::cos(el) * std::sin(az_rad),
+                                           std::cos(el) * std::cos(az_rad),
+                                           std::sin(el)};
+    initial.time = 0.0;
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 240.0;
+    cfg.max_time = 300.0;
+
+    auto states = sim.simulate(initial, cfg);
+    CHECK(!states.empty());
+
+    const auto& impact = states.back();
+    const double actual_range = std::sqrt(impact.position.x * impact.position.x
+                                        + impact.position.y * impact.position.y);
+    std::printf("  Requested: %.1f m  |  Actual: %.2f m  |  Elev: %.3f°  |  ToF: %.1f ms\n",
+                target_range, actual_range, sol.elevation_deg, sol.flight_time_ms);
+
+    // Solution should hit within 0.5 m of the requested range
+    CHECK_NEAR(actual_range, target_range, 0.5);
+
+    // Flight time should agree with simulation to within 5 ms
+    CHECK_NEAR(sol.flight_time_ms, impact.time * 1000.0, 5.0);
+}
+
+static void test_fire_control_high_angle() {
+    SECTION("solve_elevation: high-angle solution lands at same range, longer ToF");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed = 600.0;
+    const double target_range = 300.0;
+    const double az           = 90.0;  // due East
+
+    FireSolution lo = solve_elevation(sim, LauncherOrientation{az},
+                                       target_range, muzzle_speed,
+                                       0.0, /*high_angle=*/false);
+    FireSolution hi = solve_elevation(sim, LauncherOrientation{az},
+                                       target_range, muzzle_speed,
+                                       0.0, /*high_angle=*/true);
+
+    CHECK(lo.valid);
+    CHECK(hi.valid);
+
+    std::printf("  Low-angle : elev=%.2f°  ToF=%.0f ms\n",
+                lo.elevation_deg, lo.flight_time_ms);
+    std::printf("  High-angle: elev=%.2f°  ToF=%.0f ms\n",
+                hi.elevation_deg, hi.flight_time_ms);
+
+    // High-angle solution must have a steeper elevation and longer flight time
+    CHECK(hi.elevation_deg > lo.elevation_deg);
+    CHECK(hi.flight_time_ms > lo.flight_time_ms);
+}
+
+static void test_fire_control_out_of_range() {
+    SECTION("solve_elevation: returns valid=false when target is out of range");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    // 1 m/s muzzle velocity — cannot reach 10 000 m
+    FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
+                                       10000.0, /*muzzle_speed=*/1.0);
+    CHECK(!sol.valid);
+}
+
+static void test_fire_control_elevated_launcher() {
+    SECTION("solve_elevation: launcher above target plane");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed    = 400.0;
+    const double target_range    = 400.0;
+    const double launch_height   = 100.0;  // launcher 100 m above target
+
+    FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
+                                       target_range, muzzle_speed,
+                                       launch_height);
+    CHECK(sol.valid);
+
+    std::printf("  Elevated launcher (h=%.0fm): elev=%.3f°  ToF=%.0f ms\n",
+                launch_height, sol.elevation_deg, sol.flight_time_ms);
+
+    // With a 100 m height advantage, elevation can be negative (shooting down)
+    // For a 400 m range this should be sub-horizontal
+    CHECK(sol.elevation_deg < 45.0);
+}
+
+static void test_fire_control_azimuth_independence() {
+    SECTION("solve_elevation: elevation angle is azimuth-independent");
+
+    AtmosphericConditions atm = still_atm();  // still air, no wind
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed = 500.0;
+    const double range        = 350.0;
+
+    FireSolution north = solve_elevation(sim, LauncherOrientation{  0.0}, range, muzzle_speed);
+    FireSolution east  = solve_elevation(sim, LauncherOrientation{ 90.0}, range, muzzle_speed);
+    FireSolution south = solve_elevation(sim, LauncherOrientation{180.0}, range, muzzle_speed);
+
+    CHECK(north.valid && east.valid && south.valid);
+
+    std::printf("  N: %.4f°  E: %.4f°  S: %.4f°\n",
+                north.elevation_deg, east.elevation_deg, south.elevation_deg);
+
+    // Without wind, elevation should be identical regardless of azimuth
+    CHECK_NEAR(north.elevation_deg, east.elevation_deg,  0.01);
+    CHECK_NEAR(north.elevation_deg, south.elevation_deg, 0.01);
+}
+
+// ---------------------------------------------------------------------------
+// FireControlTable tests
+// ---------------------------------------------------------------------------
+static void test_table_builds_and_is_ready() {
+    SECTION("FireControlTable: builds without error and marks ready");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    CHECK(!table.ready());
+    CHECK(table.max_range_m() == 0.0);
+
+    table.build(sim, 600.0);
+
+    CHECK(table.ready());
+    CHECK(table.max_range_m() > 0.0);
+    CHECK(!table.entries().empty());
+
+    std::printf("  max_range=%.1f m  entries=%zu\n",
+                table.max_range_m(), table.entries().size());
+}
+
+static void test_table_lookup_accuracy() {
+    SECTION("FireControlTable: lookup agrees with solve_elevation within 1 m");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    table.build(sim, 600.0, 0.0, 0.0, false, 500);
+
+    CHECK(table.ready());
+
+    // Test several ranges across the achievable envelope
+    const double max_r = table.max_range_m();
+    for (double frac : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+        const double range = frac * max_r;
+        FireSolution ref = solve_elevation(sim, LauncherOrientation{0.0},
+                                           range, 600.0);
+        FireSolution tbl = table.lookup(range);
+
+        CHECK(tbl.valid);
+        CHECK(ref.valid);
+
+        // Elevation should agree within 0.2°
+        CHECK_NEAR(tbl.elevation_deg, ref.elevation_deg, 0.2);
+        // Flight time should agree within 50 ms
+        CHECK_NEAR(tbl.flight_time_ms, ref.flight_time_ms, 50.0);
+    }
+}
+
+static void test_table_out_of_range() {
+    SECTION("FireControlTable: lookup returns valid=false beyond max range");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    table.build(sim, 600.0);
+
+    FireSolution beyond = table.lookup(table.max_range_m() * 2.0);
+    CHECK(!beyond.valid);
+
+    FireSolution negative = table.lookup(-10.0);
+    CHECK(!negative.valid);
+}
+
+static void test_table_lookup_realtime_performance() {
+    SECTION("FireControlTable: lookup is fast enough for 60 Hz game loop");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    table.build(sim, 600.0, 0.0, 0.0, false, 500);
+
+    CHECK(table.ready());
+
+    const double max_r    = table.max_range_m();
+    const int    N        = 10000;  // simulate 10 000 consecutive frame lookups
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    volatile double sink = 0.0;  // prevent the compiler optimising the loop away
+    for (int i = 0; i < N; ++i) {
+        const double range = max_r * (i % 1000) / 1000.0;
+        FireSolution s = table.lookup(range);
+        sink += s.elevation_deg;
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    (void)sink;
+
+    const double total_us  = std::chrono::duration<double, std::micro>(t1 - t0).count();
+    const double per_us    = total_us / N;
+    const double budget_us = 1e6 / 60.0;   // 16 667 µs per frame
+
+    std::printf("  %d lookups in %.1f µs  (%.3f µs/lookup,  budget=%.0f µs/frame)\n",
+                N, total_us, per_us, budget_us);
+
+    // Each lookup must be well under 1 µs — negligible vs 60 Hz budget
+    CHECK(per_us < 1.0);
+}
+
+static void test_table_build_timing() {
+    SECTION("FireControlTable: build time is reported (informational)");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    FireControlTable table;
+    table.build(sim, 600.0, 0.0, 0.0, false, 500);
+    auto t1 = std::chrono::high_resolution_clock::now();
+
+    const double build_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    std::printf("  500-sample table built in %.1f ms  "
+                "(run async or during loading)\n", build_ms);
+
+    CHECK(table.ready());
+    // Build must complete in < 5 s on any reasonable machine
+    CHECK(build_ms < 5000.0);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -449,6 +713,16 @@ int main() {
     test_realtime_performance();
     test_streaming_callback();
     test_altitude_varying_atmosphere();
+    test_fire_control_basic();
+    test_fire_control_high_angle();
+    test_fire_control_out_of_range();
+    test_fire_control_elevated_launcher();
+    test_fire_control_azimuth_independence();
+    test_table_builds_and_is_ready();
+    test_table_lookup_accuracy();
+    test_table_out_of_range();
+    test_table_lookup_realtime_performance();
+    test_table_build_timing();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);

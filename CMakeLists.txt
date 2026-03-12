@@ -29,6 +29,7 @@ set(BALLISTICS_SOURCES
     src/atmosphere.cpp
     src/munition.cpp
     src/trajectory.cpp
+    src/fire_control.cpp
 )
 
 add_library(ballistics ${BALLISTICS_SOURCES})

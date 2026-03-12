@@ -166,6 +166,15 @@ void TrajectorySimulator::simulate(const ProjectileState& initial,
 
     ProjectileState state = initial;
 
+    // If the projectile starts at or below the ground plane and has no upward
+    // velocity (e.g. negative elevation with zero launch height), it cannot
+    // become airborne — report immediate impact and return.
+    if (state.position.z <= cfg.ground_z && state.velocity.z <= 0.0) {
+        state.position.z = cfg.ground_z;
+        callback(state);
+        return;
+    }
+
     // Notify caller of the initial state
     if (!callback(state)) return;
 

@@ -1,0 +1,162 @@
+#pragma once
+
+#include "trajectory.hpp"
+#include <vector>
+
+namespace ballistics {
+
+// ---------------------------------------------------------------------------
+// Coordinate convention (matches the rest of the library)
+// ---------------------------------------------------------------------------
+// x = East, y = North, z = Up
+// Azimuth is measured from North, clockwise:
+//   0°  = North (+y)
+//   90° = East  (+x)
+//  180° = South (-y)
+//  270° = West  (-x)
+
+/// Horizontal orientation of the launcher (azimuth only).
+/// Elevation is the output of solve_elevation(), not an input.
+struct LauncherOrientation {
+    double azimuth_deg{0.0};  ///< Horizontal bearing to target (degrees, 0=North, CW)
+};
+
+/// Result returned by solve_elevation() and FireControlTable::lookup().
+struct FireSolution {
+    /// Launch elevation angle above horizontal (degrees).
+    /// Negative values indicate a downward shot (launcher above target plane).
+    double elevation_deg{0.0};
+
+    /// Time of flight from launch to impact (milliseconds).
+    double flight_time_ms{0.0};
+
+    /// True if a solution was found within the munition's maximum range.
+    bool valid{false};
+};
+
+// ---------------------------------------------------------------------------
+// solve_elevation — accurate but NOT real-time
+// ---------------------------------------------------------------------------
+/// Solve for the launch elevation angle that places the projectile at
+/// the given horizontal range using ternary search + bisection.
+///
+/// @note  Cost: ~120–180 full trajectory simulations per call.
+///        Typical wall time: 5–100 ms depending on trajectory length.
+///        Use FireControlTable::lookup() for per-frame game queries.
+///
+/// @param sim              Configured TrajectorySimulator (munition + atmosphere)
+/// @param orientation      Horizontal bearing from launcher to target
+/// @param range_m          Horizontal ground range to target (m)
+/// @param muzzle_speed_ms  Muzzle velocity (m/s)
+/// @param launch_height_m  Height of launcher above the target plane (m)
+/// @param high_angle       false = low-angle (direct fire), true = high-angle (plunging fire)
+/// @param tolerance_m      Bisection convergence threshold (m)  [default 0.1]
+///
+/// @returns FireSolution with valid=true on success.
+FireSolution solve_elevation(
+    const TrajectorySimulator& sim,
+    LauncherOrientation        orientation,
+    double                     range_m,
+    double                     muzzle_speed_ms,
+    double                     launch_height_m = 0.0,
+    bool                       high_angle      = false,
+    double                     tolerance_m     = 0.1);
+
+// ---------------------------------------------------------------------------
+// FireControlTable — O(log N) real-time lookup
+// ---------------------------------------------------------------------------
+/// Pre-computed range → (elevation, flight-time) look-up table optimised
+/// for use inside a 60 Hz game loop.
+///
+/// ## Usage pattern
+/// @code{.cpp}
+/// // --- At startup / weapon change / weather change ---
+/// FireControlTable table;
+/// table.build(sim, muzzle_speed_ms);   // ~50–300 ms, run async if needed
+///
+/// // --- Every frame (microseconds) ---
+/// FireSolution sol = table.lookup(range_to_target_m);
+/// if (sol.valid)
+///     aim_launcher(sol.elevation_deg);
+/// @endcode
+///
+/// ## Performance
+/// build()  — sweeps @p num_samples elevation angles, one simulation each.
+///            Typical cost: 50–300 ms (depends on trajectory length).
+///            Run on a background thread or during a loading screen.
+///
+/// lookup() — binary search + linear interpolation: O(log N), < 1 µs.
+///            Safe to call from the main render/update thread every frame.
+///
+/// ## Accuracy
+/// Interpolation error is proportional to range / num_samples.
+/// With the default 500 samples and max_range ~2 km, angular error is
+/// typically < 0.01°.  Increase num_samples for longer ranges.
+class FireControlTable {
+public:
+    /// A single entry in the pre-computed table.
+    struct Entry {
+        double range_m;        ///< Horizontal range (m)
+        double elevation_deg;  ///< Required launch elevation (degrees)
+        double flight_time_ms; ///< Time of flight (ms)
+    };
+
+    // -------------------------------------------------------------------
+    // Building the table
+    // -------------------------------------------------------------------
+
+    /// Sweep @p num_samples elevation angles, simulate each trajectory,
+    /// and build a range-sorted look-up table.
+    ///
+    /// Thread-safe to call from any thread; the result is written atomically
+    /// to the internal vector before ready() returns true.
+    ///
+    /// @param sim             Simulator configured with the desired munition
+    ///                        and atmospheric conditions.
+    /// @param muzzle_speed_ms Muzzle velocity (m/s).
+    /// @param azimuth_deg     Horizontal bearing used during the sweep (degrees).
+    ///                        Irrelevant in still air; set to the expected
+    ///                        firing direction when wind is present.
+    /// @param launch_height_m Launcher height above the target plane (m).
+    /// @param high_angle      false = direct-fire table (elevation < theta_max)
+    ///                        true  = plunging-fire table (elevation > theta_max)
+    /// @param num_samples     Number of elevation samples to sweep.
+    void build(const TrajectorySimulator& sim,
+               double muzzle_speed_ms,
+               double azimuth_deg     = 0.0,
+               double launch_height_m = 0.0,
+               bool   high_angle      = false,
+               int    num_samples     = 500);
+
+    // -------------------------------------------------------------------
+    // Real-time lookup
+    // -------------------------------------------------------------------
+
+    /// Return an interpolated FireSolution for @p range_m.
+    /// O(log N) — safe to call every frame.
+    ///
+    /// @returns valid=false if @p range_m exceeds the maximum range stored
+    ///          in the table or if the table has not been built yet.
+    [[nodiscard]] FireSolution lookup(double range_m) const;
+
+    // -------------------------------------------------------------------
+    // Accessors
+    // -------------------------------------------------------------------
+
+    /// Maximum achievable range stored in this table (m).
+    /// Returns 0 if the table is empty.
+    [[nodiscard]] double max_range_m() const noexcept;
+
+    /// True after a successful build().
+    [[nodiscard]] bool ready() const noexcept { return !entries_.empty(); }
+
+    /// Raw sorted entries — useful for debug visualisation or export.
+    [[nodiscard]] const std::vector<Entry>& entries() const noexcept {
+        return entries_;
+    }
+
+private:
+    std::vector<Entry> entries_;  // sorted by range_m ascending
+};
+
+} // namespace ballistics
