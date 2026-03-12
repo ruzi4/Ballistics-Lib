@@ -852,6 +852,127 @@ static void test_munition_library_load_file() {
     CHECK(threw);
 }
 
+static void test_table_with_target_altitude() {
+    SECTION("FireControlTable: build with non-zero target_altitude_m");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    // Build two tables with the same launch height but different target
+    // altitudes. Firing down at a depressed target should achieve longer
+    // horizontal range than firing at the same elevation.
+    const double muzzle   = 600.0;
+    const double lh       = 100.0;   // launcher 100 m above sea level
+
+    FireControlTable table_flat;   // target at z = 0
+    FireControlTable table_elev;   // target at z = 50 m (half-way up)
+
+    table_flat.build(sim, muzzle, 0.0, lh, false, 200, /*target_altitude_m=*/0.0);
+    table_elev.build(sim, muzzle, 0.0, lh, false, 200, /*target_altitude_m=*/50.0);
+
+    CHECK(table_flat.ready());
+    CHECK(table_elev.ready());
+
+    // An elevated target means the projectile hits a ground plane that is
+    // closer in the vertical dimension, so max horizontal range should differ.
+    std::printf("  max_range flat=%.1f m  elevated_target=%.1f m\n",
+                table_flat.max_range_m(), table_elev.max_range_m());
+
+    // Both tables should produce valid solutions at the same test range
+    const double test_range = std::min(table_flat.max_range_m(),
+                                       table_elev.max_range_m()) * 0.5;
+    CHECK(table_flat.lookup(test_range).valid);
+    CHECK(table_elev.lookup(test_range).valid);
+}
+
+static void test_table_wind_azimuth() {
+    SECTION("FireControlTable: azimuth affects lookup when wind is present");
+
+    // Build two tables for the same munition but different azimuths in
+    // the presence of a strong headwind.  The firing solution should differ
+    // because one direction has a tailwind and the other a headwind.
+    AtmosphericConditions atm_wind = still_atm();
+    atm_wind.wind.velocity_ms = Vec3{30.0, 0.0, 0.0};  // 30 m/s eastward
+
+    TrajectorySimulator sim(drag_munition(), atm_wind);
+
+    const double muzzle = 500.0;
+
+    FireControlTable east_table;   // fire East  (+x): tailwind
+    FireControlTable west_table;   // fire West  (-x): headwind
+
+    east_table.build(sim, muzzle, /*azimuth_deg=*/ 90.0, 0.0, false, 200);
+    west_table.build(sim, muzzle, /*azimuth_deg=*/270.0, 0.0, false, 200);
+
+    CHECK(east_table.ready());
+    CHECK(west_table.ready());
+
+    std::printf("  Tailwind (East) max_range=%.1f m  Headwind (West) max_range=%.1f m\n",
+                east_table.max_range_m(), west_table.max_range_m());
+
+    // Tailwind increases effective range; headwind decreases it.
+    CHECK(east_table.max_range_m() > west_table.max_range_m());
+
+    // At a range both tables cover, the elevation angles must differ.
+    const double common_range = std::min(east_table.max_range_m(),
+                                         west_table.max_range_m()) * 0.5;
+    FireSolution e_sol = east_table.lookup(common_range);
+    FireSolution w_sol = west_table.lookup(common_range);
+    CHECK(e_sol.valid);
+    CHECK(w_sol.valid);
+    std::printf("  At %.0f m — East elev=%.3f°  West elev=%.3f°\n",
+                common_range, e_sol.elevation_deg, w_sol.elevation_deg);
+    // Headwind (West) requires a higher elevation to reach the same range.
+    CHECK(w_sol.elevation_deg > e_sol.elevation_deg);
+}
+
+static void test_build_num_samples_guard() {
+    SECTION("FireControlTable: num_samples < 2 is clamped to 2");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    // Passing 0 or 1 must not crash and must produce a usable table
+    for (int bad_n : {0, 1}) {
+        FireControlTable table;
+        table.build(sim, 500.0, 0.0, 0.0, false, bad_n);
+        CHECK(table.ready());
+        // A 2-entry table should at least cover some range
+        CHECK(table.max_range_m() > 0.0);
+        std::printf("  num_samples=%d → entries=%zu  max_range=%.1f m\n",
+                    bad_n, table.entries().size(), table.max_range_m());
+    }
+}
+
+static void test_invalid_muzzle_speed() {
+    SECTION("solve_elevation and build: throw on muzzle_speed_ms <= 0");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    // solve_elevation
+    bool threw = false;
+    try { solve_elevation(sim, LauncherOrientation{0.0}, 100.0, /*muzzle=*/0.0); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+
+    threw = false;
+    try { solve_elevation(sim, LauncherOrientation{0.0}, 100.0, /*muzzle=*/-1.0); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+
+    // FireControlTable::build
+    threw = false;
+    try { FireControlTable t; t.build(sim, /*muzzle=*/0.0); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+
+    threw = false;
+    try { FireControlTable t; t.build(sim, /*muzzle=*/-500.0); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -882,6 +1003,10 @@ int main() {
     test_fire_control_wind();
     test_isa_above_stratopause();
     test_munition_library_load_file();
+    test_table_with_target_altitude();
+    test_table_wind_azimuth();
+    test_build_num_samples_guard();
+    test_invalid_muzzle_speed();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);

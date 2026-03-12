@@ -57,6 +57,8 @@ struct FireSolution {
 ///
 /// @returns FireSolution with valid=true on success, valid=false if
 ///          @p range_m exceeds the munition's maximum range.
+///
+/// @throws std::invalid_argument if @p muzzle_speed_ms <= 0.
 FireSolution solve_elevation(
     const TrajectorySimulator& sim,
     LauncherOrientation        orientation,
@@ -131,6 +133,8 @@ public:
     /// @param target_altitude_m Altitude of the target / ground plane (m).
     ///                          Defaults to 0.  Set to a non-zero value when
     ///                          firing at an elevated or depressed target.
+    ///
+    /// @throws std::invalid_argument if @p muzzle_speed_ms <= 0.
     void build(const TrajectorySimulator& sim,
                double muzzle_speed_ms,
                double azimuth_deg       = 0.0,
@@ -146,8 +150,11 @@ public:
     /// Return an interpolated FireSolution for @p range_m.
     /// O(log N) — safe to call every frame.
     ///
-    /// @returns valid=false if @p range_m exceeds the maximum range stored
-    ///          in the table or if the table has not been built yet.
+    /// @returns  valid=false when any of the following are true:
+    ///           - The table has not been built yet (call ready() to check).
+    ///           - @p range_m is negative.
+    ///           - @p range_m is below the table's minimum stored range.
+    ///           - @p range_m exceeds the table's maximum range.
     [[nodiscard]] FireSolution lookup(double range_m) const;
 
     // -------------------------------------------------------------------

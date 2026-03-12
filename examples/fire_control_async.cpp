@@ -55,6 +55,11 @@ public:
     /// Safe to call from the main thread at any time (weapon change, weather
     /// update, etc.).  If a build is already in flight it is left to complete
     /// — a second request is silently ignored until the first finishes.
+    ///
+    /// @note  Must be called from the same thread as poll() and lookup().
+    ///        The TrajectorySimulator passed here is copied into the async
+    ///        task, so the caller's instance may be destroyed after this
+    ///        call returns.
     void request_build(const TrajectorySimulator& sim,
                        double muzzle_speed_ms,
                        double azimuth_deg     = 0.0,
@@ -72,9 +77,11 @@ public:
 
         build_started_ = Clock::now();
 
-        // Capture by value so the lambda owns everything it needs
+        // Capture sim by value so the async task owns its own copy.
+        // This prevents a dangling reference if the caller's sim object
+        // goes out of scope before the background task reads it.
         pending_ = std::async(std::launch::async,
-            [=, &sim]() -> FireControlTable {
+            [=, sim = sim]() -> FireControlTable {
                 FireControlTable t;
                 t.build(sim, muzzle_speed_ms, azimuth_deg,
                         launch_height_m, high_angle, num_samples);
@@ -85,6 +92,10 @@ public:
     /// Call once per frame on the main thread.
     /// Swaps the new table in if the background build has completed.
     /// Cost: < 1 µs when no build is pending.
+    ///
+    /// @note  Must be called from the same thread as request_build() and
+    ///        lookup().  There is no internal synchronisation — the design
+    ///        assumes a single "main" thread owns this object.
     void poll() {
         if (!pending_.valid()) return;
         if (pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
