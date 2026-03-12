@@ -576,6 +576,129 @@ static void test_fire_control_azimuth_independence() {
 }
 
 // ---------------------------------------------------------------------------
+// FireControlTable tests
+// ---------------------------------------------------------------------------
+static void test_table_builds_and_is_ready() {
+    SECTION("FireControlTable: builds without error and marks ready");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    CHECK(!table.ready());
+    CHECK(table.max_range_m() == 0.0);
+
+    table.build(sim, 600.0);
+
+    CHECK(table.ready());
+    CHECK(table.max_range_m() > 0.0);
+    CHECK(!table.entries().empty());
+
+    std::printf("  max_range=%.1f m  entries=%zu\n",
+                table.max_range_m(), table.entries().size());
+}
+
+static void test_table_lookup_accuracy() {
+    SECTION("FireControlTable: lookup agrees with solve_elevation within 1 m");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    table.build(sim, 600.0, 0.0, 0.0, false, 500);
+
+    CHECK(table.ready());
+
+    // Test several ranges across the achievable envelope
+    const double max_r = table.max_range_m();
+    for (double frac : {0.1, 0.3, 0.5, 0.7, 0.9}) {
+        const double range = frac * max_r;
+        FireSolution ref = solve_elevation(sim, LauncherOrientation{0.0},
+                                           range, 600.0);
+        FireSolution tbl = table.lookup(range);
+
+        CHECK(tbl.valid);
+        CHECK(ref.valid);
+
+        // Elevation should agree within 0.2°
+        CHECK_NEAR(tbl.elevation_deg, ref.elevation_deg, 0.2);
+        // Flight time should agree within 50 ms
+        CHECK_NEAR(tbl.flight_time_ms, ref.flight_time_ms, 50.0);
+    }
+}
+
+static void test_table_out_of_range() {
+    SECTION("FireControlTable: lookup returns valid=false beyond max range");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    table.build(sim, 600.0);
+
+    FireSolution beyond = table.lookup(table.max_range_m() * 2.0);
+    CHECK(!beyond.valid);
+
+    FireSolution negative = table.lookup(-10.0);
+    CHECK(!negative.valid);
+}
+
+static void test_table_lookup_realtime_performance() {
+    SECTION("FireControlTable: lookup is fast enough for 60 Hz game loop");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    table.build(sim, 600.0, 0.0, 0.0, false, 500);
+
+    CHECK(table.ready());
+
+    const double max_r    = table.max_range_m();
+    const int    N        = 10000;  // simulate 10 000 consecutive frame lookups
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    volatile double sink = 0.0;  // prevent the compiler optimising the loop away
+    for (int i = 0; i < N; ++i) {
+        const double range = max_r * (i % 1000) / 1000.0;
+        FireSolution s = table.lookup(range);
+        sink += s.elevation_deg;
+    }
+    auto t1 = std::chrono::high_resolution_clock::now();
+    (void)sink;
+
+    const double total_us  = std::chrono::duration<double, std::micro>(t1 - t0).count();
+    const double per_us    = total_us / N;
+    const double budget_us = 1e6 / 60.0;   // 16 667 µs per frame
+
+    std::printf("  %d lookups in %.1f µs  (%.3f µs/lookup,  budget=%.0f µs/frame)\n",
+                N, total_us, per_us, budget_us);
+
+    // Each lookup must be well under 1 µs — negligible vs 60 Hz budget
+    CHECK(per_us < 1.0);
+}
+
+static void test_table_build_timing() {
+    SECTION("FireControlTable: build time is reported (informational)");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    FireControlTable table;
+    table.build(sim, 600.0, 0.0, 0.0, false, 500);
+    auto t1 = std::chrono::high_resolution_clock::now();
+
+    const double build_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    std::printf("  500-sample table built in %.1f ms  "
+                "(run async or during loading)\n", build_ms);
+
+    CHECK(table.ready());
+    // Build must complete in < 5 s on any reasonable machine
+    CHECK(build_ms < 5000.0);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -595,6 +718,11 @@ int main() {
     test_fire_control_out_of_range();
     test_fire_control_elevated_launcher();
     test_fire_control_azimuth_independence();
+    test_table_builds_and_is_ready();
+    test_table_lookup_accuracy();
+    test_table_out_of_range();
+    test_table_lookup_realtime_performance();
+    test_table_build_timing();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);
