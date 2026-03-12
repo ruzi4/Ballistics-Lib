@@ -264,8 +264,9 @@ FireSolution FireControlTable::lookup(double range_m) const {
     const Entry& lo = *std::prev(it);
 
     const double span = hi.range_m - lo.range_m;
-    // Guard against duplicate range entries (can occur due to floating-point
-    // rounding in the sweep).  Return the lower entry directly.
+    // Defensive: build()'s monotone filter guarantees span > 0 for any table
+    // produced by this library.  Guard here in case entries_ was populated
+    // by external code that did not enforce strict monotonicity.
     if (span == 0.0)
         return FireSolution{lo.elevation_deg, lo.flight_time_ms, true};
 
