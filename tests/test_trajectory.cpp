@@ -435,6 +435,147 @@ static void test_altitude_varying_atmosphere() {
 }
 
 // ---------------------------------------------------------------------------
+// Fire control tests
+// ---------------------------------------------------------------------------
+static void test_fire_control_basic() {
+    SECTION("solve_elevation: low-angle solution lands at requested range");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed = 600.0;   // m/s
+    const double target_range = 500.0;   // m
+    const double az           = 0.0;     // due North
+
+    FireSolution sol = solve_elevation(sim,
+                                       LauncherOrientation{az},
+                                       target_range,
+                                       muzzle_speed);
+    CHECK(sol.valid);
+    CHECK(sol.elevation_deg > 0.0);
+    CHECK(sol.elevation_deg < 45.0);   // low-angle solution
+    CHECK(sol.flight_time_ms > 0.0);
+
+    // Verify the solution: re-simulate with the returned elevation angle
+    const double el = sol.elevation_deg * (3.14159265358979323846 / 180.0);
+    const double az_rad = az * (3.14159265358979323846 / 180.0);
+
+    ProjectileState initial;
+    initial.position = {};
+    initial.velocity = muzzle_speed * Vec3{std::cos(el) * std::sin(az_rad),
+                                           std::cos(el) * std::cos(az_rad),
+                                           std::sin(el)};
+    initial.time = 0.0;
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 240.0;
+    cfg.max_time = 300.0;
+
+    auto states = sim.simulate(initial, cfg);
+    CHECK(!states.empty());
+
+    const auto& impact = states.back();
+    const double actual_range = std::sqrt(impact.position.x * impact.position.x
+                                        + impact.position.y * impact.position.y);
+    std::printf("  Requested: %.1f m  |  Actual: %.2f m  |  Elev: %.3f°  |  ToF: %.1f ms\n",
+                target_range, actual_range, sol.elevation_deg, sol.flight_time_ms);
+
+    // Solution should hit within 0.5 m of the requested range
+    CHECK_NEAR(actual_range, target_range, 0.5);
+
+    // Flight time should agree with simulation to within 5 ms
+    CHECK_NEAR(sol.flight_time_ms, impact.time * 1000.0, 5.0);
+}
+
+static void test_fire_control_high_angle() {
+    SECTION("solve_elevation: high-angle solution lands at same range, longer ToF");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed = 600.0;
+    const double target_range = 300.0;
+    const double az           = 90.0;  // due East
+
+    FireSolution lo = solve_elevation(sim, LauncherOrientation{az},
+                                       target_range, muzzle_speed,
+                                       0.0, /*high_angle=*/false);
+    FireSolution hi = solve_elevation(sim, LauncherOrientation{az},
+                                       target_range, muzzle_speed,
+                                       0.0, /*high_angle=*/true);
+
+    CHECK(lo.valid);
+    CHECK(hi.valid);
+
+    std::printf("  Low-angle : elev=%.2f°  ToF=%.0f ms\n",
+                lo.elevation_deg, lo.flight_time_ms);
+    std::printf("  High-angle: elev=%.2f°  ToF=%.0f ms\n",
+                hi.elevation_deg, hi.flight_time_ms);
+
+    // High-angle solution must have a steeper elevation and longer flight time
+    CHECK(hi.elevation_deg > lo.elevation_deg);
+    CHECK(hi.flight_time_ms > lo.flight_time_ms);
+}
+
+static void test_fire_control_out_of_range() {
+    SECTION("solve_elevation: returns valid=false when target is out of range");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    // 1 m/s muzzle velocity — cannot reach 10 000 m
+    FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
+                                       10000.0, /*muzzle_speed=*/1.0);
+    CHECK(!sol.valid);
+}
+
+static void test_fire_control_elevated_launcher() {
+    SECTION("solve_elevation: launcher above target plane");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed    = 400.0;
+    const double target_range    = 400.0;
+    const double launch_height   = 100.0;  // launcher 100 m above target
+
+    FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
+                                       target_range, muzzle_speed,
+                                       launch_height);
+    CHECK(sol.valid);
+
+    std::printf("  Elevated launcher (h=%.0fm): elev=%.3f°  ToF=%.0f ms\n",
+                launch_height, sol.elevation_deg, sol.flight_time_ms);
+
+    // With a 100 m height advantage, elevation can be negative (shooting down)
+    // For a 400 m range this should be sub-horizontal
+    CHECK(sol.elevation_deg < 45.0);
+}
+
+static void test_fire_control_azimuth_independence() {
+    SECTION("solve_elevation: elevation angle is azimuth-independent");
+
+    AtmosphericConditions atm = still_atm();  // still air, no wind
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    const double muzzle_speed = 500.0;
+    const double range        = 350.0;
+
+    FireSolution north = solve_elevation(sim, LauncherOrientation{  0.0}, range, muzzle_speed);
+    FireSolution east  = solve_elevation(sim, LauncherOrientation{ 90.0}, range, muzzle_speed);
+    FireSolution south = solve_elevation(sim, LauncherOrientation{180.0}, range, muzzle_speed);
+
+    CHECK(north.valid && east.valid && south.valid);
+
+    std::printf("  N: %.4f°  E: %.4f°  S: %.4f°\n",
+                north.elevation_deg, east.elevation_deg, south.elevation_deg);
+
+    // Without wind, elevation should be identical regardless of azimuth
+    CHECK_NEAR(north.elevation_deg, east.elevation_deg,  0.01);
+    CHECK_NEAR(north.elevation_deg, south.elevation_deg, 0.01);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -449,6 +590,11 @@ int main() {
     test_realtime_performance();
     test_streaming_callback();
     test_altitude_varying_atmosphere();
+    test_fire_control_basic();
+    test_fire_control_high_angle();
+    test_fire_control_out_of_range();
+    test_fire_control_elevated_launcher();
+    test_fire_control_azimuth_independence();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);

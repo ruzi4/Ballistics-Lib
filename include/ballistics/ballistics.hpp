@@ -7,3 +7,4 @@
 #include "ballistics/atmosphere.hpp"
 #include "ballistics/munition.hpp"
 #include "ballistics/trajectory.hpp"
+#include "ballistics/fire_control.hpp"
