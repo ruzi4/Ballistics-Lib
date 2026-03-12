@@ -78,11 +78,10 @@ void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
 // Single-step integrators
 // ---------------------------------------------------------------------------
 
-ProjectileState TrajectorySimulator::step_rk4(const ProjectileState& s,
-                                               double dt) const noexcept
+ProjectileState TrajectorySimulator::step_rk4_rho(const ProjectileState& s,
+                                                   double dt,
+                                                   double rho) const noexcept
 {
-    const double rho = atmosphere_.air_density_kg_m3;
-
     Vec3 dp, dv;
 
     // k1
@@ -119,10 +118,10 @@ ProjectileState TrajectorySimulator::step_rk4(const ProjectileState& s,
     return next;
 }
 
-ProjectileState TrajectorySimulator::step_euler(const ProjectileState& s,
-                                                 double dt) const noexcept
+ProjectileState TrajectorySimulator::step_euler_rho(const ProjectileState& s,
+                                                     double dt,
+                                                     double rho) const noexcept
 {
-    const double rho = atmosphere_.air_density_kg_m3;
     Vec3 dp, dv;
     derivatives(s.position, s.velocity, rho, dp, dv);
 
@@ -134,6 +133,18 @@ ProjectileState TrajectorySimulator::step_euler(const ProjectileState& s,
     return next;
 }
 
+ProjectileState TrajectorySimulator::step_rk4(const ProjectileState& s,
+                                               double dt) const noexcept
+{
+    return step_rk4_rho(s, dt, atmosphere_.air_density_kg_m3);
+}
+
+ProjectileState TrajectorySimulator::step_euler(const ProjectileState& s,
+                                                 double dt) const noexcept
+{
+    return step_euler_rho(s, dt, atmosphere_.air_density_kg_m3);
+}
+
 ProjectileState TrajectorySimulator::step(const ProjectileState& state,
                                            double dt) const noexcept
 {
@@ -143,17 +154,6 @@ ProjectileState TrajectorySimulator::step(const ProjectileState& state,
 // ---------------------------------------------------------------------------
 // Batch simulation helpers
 // ---------------------------------------------------------------------------
-
-/// Resolve air density: use atmosphere_fn if provided, otherwise the fixed rho.
-static inline double resolve_density(
-    const SimulationConfig& cfg,
-    const AtmosphericConditions& fixed_atm,
-    double altitude_m)
-{
-    if (cfg.atmosphere_fn)
-        return cfg.atmosphere_fn(altitude_m).air_density_kg_m3;
-    return fixed_atm.air_density_kg_m3;
-}
 
 // Internal core used by both batch overloads.
 // Calls step_fn(state, dt) → ProjectileState and notifies callback.
@@ -185,26 +185,17 @@ void TrajectorySimulator::simulate(const ProjectileState& initial,
             dt = cfg.max_time - state.time;
         if (dt <= 0.0) break;
 
+        // Resolve air density for this step (altitude-varying if requested).
+        // Wind is always taken from the simulator's stored atmosphere.
+        const double rho = cfg.atmosphere_fn
+            ? cfg.atmosphere_fn(state.position.z).air_density_kg_m3
+            : atmosphere_.air_density_kg_m3;
+
         ProjectileState next;
         if (cfg.use_rk4) {
-            // For altitude-varying density, temporarily update drag_k
-            if (cfg.atmosphere_fn) {
-                auto atm = cfg.atmosphere_fn(state.position.z);
-                // Create a temporary simulator with updated atmosphere
-                // (avoids mutating *this in a const method)
-                TrajectorySimulator tmp(munition_, atm);
-                next = tmp.step_rk4(state, dt);
-            } else {
-                next = step_rk4(state, dt);
-            }
+            next = step_rk4_rho(state, dt, rho);
         } else {
-            if (cfg.atmosphere_fn) {
-                auto atm = cfg.atmosphere_fn(state.position.z);
-                TrajectorySimulator tmp(munition_, atm);
-                next = tmp.step_euler(state, dt);
-            } else {
-                next = step_euler(state, dt);
-            }
+            next = step_euler_rho(state, dt, rho);
         }
 
         // Ground intersection: linearly interpolate to the exact crossing time

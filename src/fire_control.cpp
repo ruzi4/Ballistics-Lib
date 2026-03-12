@@ -1,16 +1,20 @@
 #include "ballistics/fire_control.hpp"
+#include "ballistics/math/math_constants.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace ballistics {
 
 namespace {
 
-constexpr double kDegToRad = 3.14159265358979323846 / 180.0;
-
 // ---------------------------------------------------------------------------
-// Internal: simulate one shot, return (horizontal_range_m, flight_time_s)
+// Internal: simulate one shot, return (horizontal_range_m, flight_time_s).
+//
+// The projectile starts at z = launch_height_m and the ground plane is set
+// to target_z_m, so the returned range is the horizontal distance from origin
+// to the point where the projectile crosses the target elevation.
 // ---------------------------------------------------------------------------
 struct ShotResult { double range_m; double time_s; };
 
@@ -20,7 +24,8 @@ ShotResult shoot(
     double elevation_deg,
     double muzzle_speed_ms,
     double launch_height_m,
-    double sim_dt = 1.0 / 240.0)
+    double target_z_m  = 0.0,
+    double sim_dt      = 1.0 / 240.0)
 {
     const double az = azimuth_deg   * kDegToRad;
     const double el = elevation_deg * kDegToRad;
@@ -35,8 +40,8 @@ ShotResult shoot(
 
     SimulationConfig cfg;
     cfg.dt       = sim_dt;
-    cfg.max_time = 600.0;
-    cfg.ground_z = 0.0;
+    cfg.max_time = 60.0;   // 1 minute ceiling (was 600 s — needlessly long)
+    cfg.ground_z = target_z_m;
     cfg.use_rk4  = true;
 
     ProjectileState last = st;
@@ -61,19 +66,20 @@ std::pair<double, double> find_max_range_angle(
     double launch_height_m,
     double lo_deg,
     double hi_deg,
-    int    iterations = 60)
+    double target_z_m  = 0.0,
+    int    iterations  = 60)
 {
     for (int i = 0; i < iterations; ++i) {
         const double span = hi_deg - lo_deg;
         const double m1   = lo_deg + span / 3.0;
         const double m2   = hi_deg - span / 3.0;
-        const double r1   = shoot(sim, azimuth_deg, m1, muzzle_speed_ms, launch_height_m).range_m;
-        const double r2   = shoot(sim, azimuth_deg, m2, muzzle_speed_ms, launch_height_m).range_m;
+        const double r1   = shoot(sim, azimuth_deg, m1, muzzle_speed_ms, launch_height_m, target_z_m).range_m;
+        const double r2   = shoot(sim, azimuth_deg, m2, muzzle_speed_ms, launch_height_m, target_z_m).range_m;
         if (r1 < r2) lo_deg = m1;
         else          hi_deg = m2;
     }
     const double theta = (lo_deg + hi_deg) * 0.5;
-    const double r_max = shoot(sim, azimuth_deg, theta, muzzle_speed_ms, launch_height_m).range_m;
+    const double r_max = shoot(sim, azimuth_deg, theta, muzzle_speed_ms, launch_height_m, target_z_m).range_m;
     return {theta, r_max};
 }
 
@@ -90,8 +96,12 @@ FireSolution solve_elevation(
     double                     muzzle_speed_ms,
     double                     launch_height_m,
     bool                       high_angle,
-    double                     tolerance_m)
+    double                     tolerance_m,
+    double                     target_altitude_m)
 {
+    // Upper search bound: 87° (3° below vertical).  Near-vertical shots
+    // produce degenerate range behaviour under drag (range → 0) so we stop
+    // just short of vertical to keep the bisection monotone.
     constexpr double kLoSearch = -45.0;
     constexpr double kHiSearch =  87.0;
 
@@ -99,24 +109,33 @@ FireSolution solve_elevation(
 
     auto [theta_max, r_max] =
         find_max_range_angle(sim, az, muzzle_speed_ms, launch_height_m,
-                             kLoSearch, kHiSearch);
+                             kLoSearch, kHiSearch, target_altitude_m);
 
     if (range_m > r_max) return {};
 
     double lo = high_angle ? theta_max : kLoSearch;
     double hi = high_angle ? kHiSearch : theta_max;
 
-    double result_elev = (lo + hi) * 0.5;
-    double result_time = 0.0;
+    // Track the best result seen so far (minimum range error).
+    // This ensures we return the closest solution even if the bisection
+    // exhausts its iteration budget without reaching tolerance_m.
+    double best_elev = (lo + hi) * 0.5;
+    double best_time = 0.0;
+    double best_err  = std::numeric_limits<double>::max();
 
     for (int i = 0; i < 60; ++i) {
-        const double mid   = (lo + hi) * 0.5;
-        const auto   shot  = shoot(sim, az, mid, muzzle_speed_ms, launch_height_m);
+        const double mid  = (lo + hi) * 0.5;
+        const auto   shot = shoot(sim, az, mid, muzzle_speed_ms,
+                                  launch_height_m, target_altitude_m);
 
-        result_elev = mid;
-        result_time = shot.time_s;
+        const double err = std::abs(shot.range_m - range_m);
+        if (err < best_err) {
+            best_err  = err;
+            best_elev = mid;
+            best_time = shot.time_s;
+        }
 
-        if (std::abs(shot.range_m - range_m) <= tolerance_m) break;
+        if (err <= tolerance_m) break;
 
         if (!high_angle) {
             if (shot.range_m < range_m) lo = mid; else hi = mid;
@@ -125,7 +144,7 @@ FireSolution solve_elevation(
         }
     }
 
-    return FireSolution{result_elev, result_time * 1000.0, true};
+    return FireSolution{best_elev, best_time * 1000.0, true};
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +168,8 @@ void FireControlTable::build(
     double azimuth_deg,
     double launch_height_m,
     bool   high_angle,
-    int    num_samples)
+    int    num_samples,
+    double target_altitude_m)
 {
     if (num_samples < 2) num_samples = 2;
 
@@ -162,9 +182,12 @@ void FireControlTable::build(
     // --- Step 1: quick ternary search for theta_max (20 iterations = 40 sims) ---
     // This concentrates all num_samples in the relevant half of the angle range,
     // giving ~num_samples entries rather than wasting most on the discarded half.
+    // Note: uses kBuildDt resolution; a slight theta_max error is tolerated
+    // because the monotone filter in step 3 absorbs it.
     auto [theta_max, r_max_unused] =
         find_max_range_angle(sim, azimuth_deg, muzzle_speed_ms, launch_height_m,
-                             kLoSearch, kHiSearch, /*iterations=*/20);
+                             kLoSearch, kHiSearch, target_altitude_m,
+                             /*iterations=*/20);
     (void)r_max_unused;
 
     // The sweep covers only the monotone half that was requested
@@ -180,7 +203,7 @@ void FireControlTable::build(
     for (int i = 0; i < num_samples; ++i) {
         const double elev = sweep_lo + i * step;
         const auto   s    = shoot(sim, azimuth_deg, elev, muzzle_speed_ms,
-                                  launch_height_m, kBuildDt);
+                                  launch_height_m, target_altitude_m, kBuildDt);
         raw.push_back({elev, s.range_m, s.time_s});
     }
 
@@ -222,8 +245,12 @@ FireSolution FireControlTable::lookup(double range_m) const {
         entries_.begin(), entries_.end(), range_m,
         [](const Entry& e, double r) { return e.range_m < r; });
 
-    // Exact match or first entry
-    if (it == entries_.begin() || it->range_m == range_m)
+    // Below the minimum range stored in the table → no valid solution
+    if (it == entries_.begin() && it->range_m != range_m)
+        return {};
+
+    // Exact match
+    if (it->range_m == range_m)
         return FireSolution{it->elevation_deg, it->flight_time_ms, true};
 
     // Interpolate between [prev, it]

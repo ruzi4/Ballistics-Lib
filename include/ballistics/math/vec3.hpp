@@ -63,6 +63,10 @@ struct Vec3 {
     [[nodiscard]] double norm() const noexcept {
         return std::sqrt(norm_sq());
     }
+    /// Return a unit vector in the same direction.
+    /// @note  Returns Vec3{0,0,0} (the zero vector) when called on a zero-length
+    ///        vector.  Callers must check for this if a zero-velocity input is
+    ///        possible (e.g. a projectile at rest).
     [[nodiscard]] Vec3 normalized() const noexcept {
         const double n = norm();
         return (n > 0.0) ? (*this / n) : Vec3{};

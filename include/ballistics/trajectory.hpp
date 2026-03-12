@@ -159,6 +159,19 @@ private:
                      double      rho,
                      Vec3&       dpos_dt,
                      Vec3&       dvel_dt) const noexcept;
+
+    /// RK4 step with an explicit air density, bypassing the stored atmosphere.
+    /// Wind is still taken from the stored atmosphere.
+    /// Used by simulate() to avoid constructing a temporary TrajectorySimulator
+    /// when altitude-varying density is requested.
+    [[nodiscard]] ProjectileState step_rk4_rho(const ProjectileState& state,
+                                                double dt,
+                                                double rho) const noexcept;
+
+    /// Symplectic Euler step with an explicit air density.
+    [[nodiscard]] ProjectileState step_euler_rho(const ProjectileState& state,
+                                                  double dt,
+                                                  double rho) const noexcept;
 };
 
 } // namespace ballistics

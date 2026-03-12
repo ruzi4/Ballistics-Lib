@@ -5,6 +5,7 @@
 /// per-frame compute time to verify the 60 fps performance target.
 
 #include <ballistics/ballistics.hpp>
+#include <ballistics/math/math_constants.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -62,7 +63,7 @@ int main(int argc, char* argv[]) {
     // 3. Initial state: 45° elevation, muzzle velocity 930 m/s
     // -----------------------------------------------------------------------
     const double muzzle_speed = 930.0; // m/s
-    const double angle_rad    = 45.0 * (3.14159265358979323846 / 180.0);
+    const double angle_rad    = 45.0 * kDegToRad;
 
     ProjectileState state;
     state.position = Vec3{0.0, 0.0, 1.5}; // 1.5 m above ground
@@ -92,8 +93,20 @@ int main(int argc, char* argv[]) {
 
         // 4 physics sub-steps per render frame
         for (int i = 0; i < sub_steps && !landed; ++i) {
+            const ProjectileState prev = state;
             state = sim.step(state, phys_dt);
             if (state.position.z <= 0.0) {
+                // Linearly interpolate to the exact ground crossing so the
+                // reported impact time and position are accurate rather than
+                // being the first below-ground state.
+                const double dz = prev.position.z - state.position.z;
+                if (dz > 0.0) {
+                    const double frac = prev.position.z / dz;
+                    state.position = prev.position + frac * (state.position - prev.position);
+                    state.velocity = prev.velocity + frac * (state.velocity - prev.velocity);
+                    state.time     = prev.time     + frac * phys_dt;
+                    state.position.z = 0.0;
+                }
                 landed = true;
             }
         }

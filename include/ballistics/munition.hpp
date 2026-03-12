@@ -25,7 +25,10 @@ struct MunitionSpec {
     double mass_kg{0.0};            ///< Projectile mass (kg)
     double density_kg_m3{0.0};      ///< Material density (kg/m³)
     double reference_area_m2{0.0};  ///< Cross-sectional reference area (m²)
-    double drag_coefficient{0.0};   ///< Drag coefficient Cd (dimensionless)
+    /// Drag coefficient Cd (dimensionless).
+    /// A value of 0.0 is a valid "vacuum" sentinel: it disables aerodynamic
+    /// drag entirely.  ballistic_coefficient() returns 0.0 in that case.
+    double drag_coefficient{0.0};
     double diameter_m{0.0};         ///< Characteristic diameter (m)
 
     /// Ballistic coefficient BC = mass / (Cd × A_ref)  [kg/m²]
