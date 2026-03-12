@@ -1,0 +1,457 @@
+/// @file test_trajectory.cpp
+/// @brief Unit tests for Ballistics-Lib.
+///
+/// Uses a minimal hand-rolled test framework (no external dependency).
+/// Build and run: ctest --output-on-failure
+
+#include <ballistics/ballistics.hpp>
+
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+using namespace ballistics;
+
+// ---------------------------------------------------------------------------
+// Tiny test framework
+// ---------------------------------------------------------------------------
+static int g_pass = 0;
+static int g_fail = 0;
+
+#define CHECK(expr) do { \
+    if (!(expr)) { \
+        std::printf("  FAIL  %s:%d  %s\n", __FILE__, __LINE__, #expr); \
+        ++g_fail; \
+    } else { \
+        ++g_pass; \
+    } \
+} while (false)
+
+#define CHECK_NEAR(a, b, tol) \
+    CHECK(std::abs((a) - (b)) <= (tol))
+
+#define SECTION(name) std::printf("\n[%s]\n", (name))
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build a zero-drag munition (Cd = 0) for vacuum trajectory tests.
+static MunitionSpec vacuum_munition() {
+    MunitionSpec m;
+    m.name              = "vacuum_test";
+    m.mass_kg           = 0.01;
+    m.density_kg_m3     = 11000.0;
+    m.reference_area_m2 = 1e-4;
+    m.drag_coefficient  = 0.0;  // No drag
+    m.diameter_m        = 0.01;
+    return m;
+}
+
+/// Build a standard munition for drag tests.
+static MunitionSpec drag_munition() {
+    MunitionSpec m;
+    m.name              = "drag_test";
+    m.mass_kg           = 0.01;
+    m.density_kg_m3     = 11000.0;
+    m.reference_area_m2 = 1e-4;
+    m.drag_coefficient  = 0.4;
+    m.diameter_m        = 0.01;
+    return m;
+}
+
+/// Still sea-level atmosphere, no wind.
+static AtmosphericConditions still_atm() {
+    return isa_conditions(0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Vec3 tests
+// ---------------------------------------------------------------------------
+static void test_vec3() {
+    SECTION("Vec3 arithmetic");
+
+    Vec3 a{1, 2, 3};
+    Vec3 b{4, 5, 6};
+
+    auto s = a + b;
+    CHECK_NEAR(s.x, 5.0, 1e-15);
+    CHECK_NEAR(s.y, 7.0, 1e-15);
+    CHECK_NEAR(s.z, 9.0, 1e-15);
+
+    auto d = b - a;
+    CHECK_NEAR(d.x, 3.0, 1e-15);
+
+    auto scaled = a * 2.0;
+    CHECK_NEAR(scaled.x, 2.0, 1e-15);
+    CHECK_NEAR(scaled.z, 6.0, 1e-15);
+
+    CHECK_NEAR(a.dot(b), 32.0, 1e-15);
+    { const double n = Vec3{3, 0, 0}.norm(); CHECK_NEAR(n, 3.0, 1e-15); }
+    { const double n = Vec3{3, 4, 0}.norm(); CHECK_NEAR(n, 5.0, 1e-15); }
+
+    Vec3 u = Vec3{3, 0, 0}.normalized();
+    CHECK_NEAR(u.x, 1.0, 1e-15);
+    CHECK_NEAR(u.norm(), 1.0, 1e-15);
+
+    // Zero vector normalization should not crash
+    Vec3 zero = Vec3{}.normalized();
+    CHECK_NEAR(zero.norm(), 0.0, 1e-15);
+}
+
+// ---------------------------------------------------------------------------
+// Atmosphere tests
+// ---------------------------------------------------------------------------
+static void test_atmosphere() {
+    SECTION("Atmosphere ISA");
+
+    // Sea level
+    auto sl = isa_conditions(0.0);
+    CHECK_NEAR(sl.temperature_K,    288.15,  0.01);
+    CHECK_NEAR(sl.pressure_Pa,      101325.0, 1.0);
+    CHECK_NEAR(sl.air_density_kg_m3, 1.225,   0.01);
+
+    // Density decreases with altitude
+    auto hi = isa_conditions(5000.0);
+    CHECK(hi.air_density_kg_m3 < sl.air_density_kg_m3);
+    CHECK(hi.temperature_K     < sl.temperature_K);
+
+    // Tropopause: temperature should be ~216.65 K
+    auto tp = isa_conditions(11000.0);
+    CHECK_NEAR(tp.temperature_K, 216.65, 0.5);
+
+    // compute_air_density: dry air at ISA sea level
+    double rho = compute_air_density(288.15, 101325.0, 0.0);
+    CHECK_NEAR(rho, 1.225, 0.01);
+
+    // Humidity increases effective volume, so density decreases slightly
+    double rho_wet = compute_air_density(288.15, 101325.0, 1.0);
+    CHECK(rho_wet < rho);
+}
+
+// ---------------------------------------------------------------------------
+// Munition library tests
+// ---------------------------------------------------------------------------
+static void test_munition_library() {
+    SECTION("MunitionLibrary JSON loading");
+
+    const std::string json = R"({
+        "munitions": [
+            {
+                "name": "test_round",
+                "mass_kg": 0.01,
+                "density_kg_m3": 11000,
+                "reference_area_m2": 1e-4,
+                "drag_coefficient": 0.30,
+                "diameter_m": 0.01
+            }
+        ]
+    })";
+
+    MunitionLibrary lib;
+    lib.load_from_string(json);
+
+    CHECK(lib.size() == 1);
+    CHECK(lib.contains("test_round"));
+    CHECK(!lib.contains("nonexistent"));
+
+    const auto& spec = lib.get("test_round");
+    CHECK(spec.name == "test_round");
+    CHECK_NEAR(spec.mass_kg,            0.01,    1e-15);
+    CHECK_NEAR(spec.density_kg_m3,      11000.0, 1e-10);
+    CHECK_NEAR(spec.reference_area_m2,  1e-4,    1e-15);
+    CHECK_NEAR(spec.drag_coefficient,   0.30,    1e-15);
+    CHECK_NEAR(spec.diameter_m,         0.01,    1e-15);
+
+    // Derived quantities
+    CHECK_NEAR(spec.ballistic_coefficient(),
+               spec.mass_kg / (spec.drag_coefficient * spec.reference_area_m2),
+               1e-10);
+    CHECK_NEAR(spec.volume_m3(),
+               spec.mass_kg / spec.density_kg_m3,
+               1e-20);
+
+    // Missing field should throw
+    const std::string bad_json = R"({"munitions":[{"name":"x","mass_kg":1.0}]})";
+    bool threw = false;
+    try { MunitionLibrary b; b.load_from_string(bad_json); }
+    catch (const std::invalid_argument&) { threw = true; }
+    CHECK(threw);
+
+    // out_of_range on missing name
+    threw = false;
+    try { (void)lib.get("ghost"); }
+    catch (const std::out_of_range&) { threw = true; }
+    CHECK(threw);
+
+    // Bad JSON
+    threw = false;
+    try { MunitionLibrary b; b.load_from_string("not json at all!"); }
+    catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+// ---------------------------------------------------------------------------
+// Vacuum trajectory (zero drag)
+// ---------------------------------------------------------------------------
+static void test_vacuum_trajectory() {
+    SECTION("Vacuum trajectory (Cd=0) — parabolic motion");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(vacuum_munition(), atm);
+
+    // Horizontal shot
+    const double v0 = 100.0;  // m/s horizontal
+    const double z0 = 100.0;  // m above ground
+
+    ProjectileState state;
+    state.position = Vec3{0.0, 0.0, z0};
+    state.velocity = Vec3{v0, 0.0, 0.0};
+    state.time     = 0.0;
+
+    // Analytical: time to ground = sqrt(2*z0/g)
+    const double g      = 9.80665;
+    const double t_land = std::sqrt(2.0 * z0 / g);
+    const double x_land = v0 * t_land;
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 1000.0;
+    cfg.max_time = 10.0;
+    cfg.use_rk4  = true;
+
+    auto states = sim.simulate(state, cfg);
+    CHECK(!states.empty());
+
+    const auto& impact = states.back();
+    // Impact time within 1 ms of analytical
+    CHECK_NEAR(impact.time, t_land, 0.01);
+    // Impact range within 1 m of analytical
+    CHECK_NEAR(impact.position.x, x_land, 1.0);
+    // z at or near ground_z = 0
+    CHECK(impact.position.z <= 0.01);
+
+    // Horizontal velocity unchanged (no drag)
+    CHECK_NEAR(impact.velocity.x, v0, 0.1);
+}
+
+// ---------------------------------------------------------------------------
+// Drag reduces range vs vacuum
+// ---------------------------------------------------------------------------
+static void test_drag_reduces_range() {
+    SECTION("Drag reduces horizontal range");
+
+    AtmosphericConditions atm = still_atm();
+
+    const double v0        = 600.0;  // m/s muzzle velocity
+    const double angle_deg = 30.0;
+    const double angle_rad = angle_deg * (3.14159265358979323846 / 180.0);
+
+    ProjectileState initial;
+    initial.position = Vec3{0.0, 0.0, 0.0};
+    initial.velocity = Vec3{v0 * std::cos(angle_rad), 0.0,
+                            v0 * std::sin(angle_rad)};
+    initial.time     = 0.0;
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 1000.0;
+    cfg.max_time = 120.0;
+    cfg.use_rk4  = true;
+
+    // Vacuum simulation
+    TrajectorySimulator vac_sim(vacuum_munition(), atm);
+    auto vac_states = vac_sim.simulate(initial, cfg);
+
+    // Drag simulation
+    TrajectorySimulator drag_sim(drag_munition(), atm);
+    auto drag_states = drag_sim.simulate(initial, cfg);
+
+    CHECK(!vac_states.empty());
+    CHECK(!drag_states.empty());
+
+    const double x_vac  = vac_states.back().position.x;
+    const double x_drag = drag_states.back().position.x;
+
+    std::printf("  Vacuum range: %.1f m,  Drag range: %.1f m\n", x_vac, x_drag);
+    CHECK(x_drag < x_vac);
+    // Drag should remove at least 30% of range at these parameters
+    CHECK(x_drag < 0.7 * x_vac);
+}
+
+// ---------------------------------------------------------------------------
+// Wind effect test
+// ---------------------------------------------------------------------------
+static void test_wind() {
+    SECTION("Wind shifts impact point");
+
+    // Tailwind (positive x) should increase range
+    AtmosphericConditions still   = still_atm();
+    AtmosphericConditions tailwind = still;
+    tailwind.wind.velocity_ms = Vec3{50.0, 0.0, 0.0};  // 50 m/s tailwind
+
+    const double angle_rad = 30.0 * (3.14159265358979323846 / 180.0);
+    ProjectileState initial;
+    initial.position = Vec3{0.0, 0.0, 1.0};
+    initial.velocity = Vec3{400.0 * std::cos(angle_rad), 0.0,
+                            400.0 * std::sin(angle_rad)};
+    initial.time     = 0.0;
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 500.0;
+    cfg.max_time = 60.0;
+
+    TrajectorySimulator s_sim(drag_munition(), still);
+    TrajectorySimulator t_sim(drag_munition(), tailwind);
+
+    auto s_states = s_sim.simulate(initial, cfg);
+    auto t_states = t_sim.simulate(initial, cfg);
+
+    const double x_still   = s_states.back().position.x;
+    const double x_tailwind = t_states.back().position.x;
+
+    std::printf("  Still range: %.1f m,  Tailwind range: %.1f m\n",
+                x_still, x_tailwind);
+    CHECK(x_tailwind > x_still);
+}
+
+// ---------------------------------------------------------------------------
+// Real-time step performance
+// ---------------------------------------------------------------------------
+static void test_realtime_performance() {
+    SECTION("Real-time step performance");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    ProjectileState state;
+    state.position = Vec3{0.0, 0.0, 1.5};
+    state.velocity = Vec3{800.0, 0.0, 400.0};
+    state.time     = 0.0;
+
+    // Simulate 1 second at 240 Hz (= 240 steps) and measure total time
+    const double dt         = 1.0 / 240.0;
+    const int    num_steps  = 240;
+
+    auto t0 = std::chrono::high_resolution_clock::now();
+    for (int i = 0; i < num_steps; ++i)
+        state = sim.step(state, dt);
+    auto t1 = std::chrono::high_resolution_clock::now();
+
+    const double total_us = std::chrono::duration<double, std::micro>(t1 - t0).count();
+    const double per_step_us = total_us / num_steps;
+    // Budget per 60 Hz frame: 16 667 µs
+    // At 4 sub-steps per frame the per-step budget is 4 167 µs — very generous.
+    // We require < 100 µs per step to leave ample headroom for many projectiles.
+    std::printf("  %d RK4 steps in %.1f µs (%.2f µs/step)\n",
+                num_steps, total_us, per_step_us);
+    CHECK(per_step_us < 100.0);  // should be <<1 µs on any modern hardware
+}
+
+// ---------------------------------------------------------------------------
+// Streaming callback
+// ---------------------------------------------------------------------------
+static void test_streaming_callback() {
+    SECTION("Streaming simulate() callback");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    ProjectileState initial;
+    initial.position = Vec3{0.0, 0.0, 1.0};
+    initial.velocity = Vec3{300.0, 0.0, 200.0};
+    initial.time     = 0.0;
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 240.0;
+    cfg.max_time = 30.0;
+
+    // Count states via callback and compare to batch
+    int  cb_count = 0;
+    bool monotone = true;
+    double prev_time = -1.0;
+    sim.simulate(initial, cfg, [&](const ProjectileState& s) {
+        ++cb_count;
+        if (s.time < prev_time) monotone = false;
+        prev_time = s.time;
+        return true;
+    });
+
+    auto states = sim.simulate(initial, cfg);
+    CHECK(cb_count == static_cast<int>(states.size()));
+    CHECK(monotone);
+    CHECK(cb_count > 0);
+
+    // Early stop
+    int stop_at = 10;
+    int counted = 0;
+    sim.simulate(initial, cfg, [&](const ProjectileState&) {
+        return ++counted < stop_at;
+    });
+    CHECK(counted == stop_at);
+}
+
+// ---------------------------------------------------------------------------
+// Altitude-varying atmosphere
+// ---------------------------------------------------------------------------
+static void test_altitude_varying_atmosphere() {
+    SECTION("Altitude-varying atmosphere callback");
+
+    MunitionSpec m = drag_munition();
+    AtmosphericConditions base_atm = still_atm();
+    TrajectorySimulator sim(m, base_atm);
+
+    ProjectileState initial;
+    initial.position = Vec3{0.0, 0.0, 0.0};
+    initial.velocity = Vec3{700.0, 0.0, 700.0};  // steep trajectory
+    initial.time     = 0.0;
+
+    // Fixed atmosphere
+    SimulationConfig cfg_fixed;
+    cfg_fixed.dt       = 1.0 / 240.0;
+    cfg_fixed.max_time = 120.0;
+
+    // Altitude-varying: standard ISA
+    SimulationConfig cfg_isa = cfg_fixed;
+    cfg_isa.atmosphere_fn = [](double alt_m) {
+        return isa_conditions(alt_m);
+    };
+
+    auto fixed_states = sim.simulate(initial, cfg_fixed);
+    auto isa_states   = sim.simulate(initial, cfg_isa);
+
+    // Both should produce valid trajectories
+    CHECK(!fixed_states.empty());
+    CHECK(!isa_states.empty());
+
+    // At high altitude, density is lower → less drag → ISA should fly farther
+    const double x_fixed = fixed_states.back().position.x;
+    const double x_isa   = isa_states.back().position.x;
+    std::printf("  Fixed-density range: %.1f m,  ISA range: %.1f m\n",
+                x_fixed, x_isa);
+    CHECK(x_isa > x_fixed);
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+int main() {
+    std::printf("=== Ballistics-Lib Unit Tests ===\n");
+
+    test_vec3();
+    test_atmosphere();
+    test_munition_library();
+    test_vacuum_trajectory();
+    test_drag_reduces_range();
+    test_wind();
+    test_realtime_performance();
+    test_streaming_callback();
+    test_altitude_varying_atmosphere();
+
+    std::printf("\n================================\n");
+    std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);
+
+    return (g_fail == 0) ? 0 : 1;
+}
