@@ -13,9 +13,10 @@ namespace {
 // ---------------------------------------------------------------------------
 // Internal: simulate one shot, return (horizontal_range_m, flight_time_s).
 //
-// The projectile starts at z = launch_height_m and the ground plane is set
-// to target_z_m, so the returned range is the horizontal distance from origin
-// to the point where the projectile crosses the target elevation.
+// launch_height_m is the height of the launcher ABOVE the target plane.
+// target_z_m is the absolute altitude of the target / ground plane.
+// The projectile starts at absolute altitude (target_z_m + launch_height_m)
+// and the simulation terminates when it descends to target_z_m.
 // ---------------------------------------------------------------------------
 struct ShotResult { double range_m; double time_s; };
 
@@ -34,7 +35,7 @@ ShotResult shoot(
     const Vec3 h_dir{std::sin(az), std::cos(az), 0.0};
 
     ProjectileState st;
-    st.position = Vec3{0.0, 0.0, launch_height_m};
+    st.position = Vec3{0.0, 0.0, target_z_m + launch_height_m};
     st.velocity = muzzle_speed_ms * (std::cos(el) * h_dir
                                    + Vec3{0.0, 0.0, std::sin(el)});
     st.time     = 0.0;

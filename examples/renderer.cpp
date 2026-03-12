@@ -59,7 +59,9 @@ struct SolveResult {
     double elevation_deg = 0.0;
     double flight_time_s = 0.0;
     double range_m       = 0.0;
-    std::vector<Vector3> traj; // trajectory points in raylib coords
+    double max_range_m   = 0.0;  // max achievable range (for diagnostics)
+    double alt_diff_m    = 0.0;  // launcher altitude - target altitude
+    std::vector<Vector3> traj;   // trajectory points in raylib coords
 };
 
 struct SolveParams {
@@ -82,6 +84,8 @@ static SolveResult solve_async(const SolveParams& p)
     const double range_m = std::sqrt(dx * dx + dy * dy);
     out.range_m = range_m;
 
+    out.alt_diff_m = p.launcher_pos.z - p.target_pos.z;
+
     if (range_m < 1.0) return out; // launcher and target too close
 
     const double az_deg       = std::atan2(dx, dy) * kRadToDeg;
@@ -91,6 +95,12 @@ static SolveResult solve_async(const SolveParams& p)
     TrajectorySimulator sim(p.munition, p.atmo);
     LauncherOrientation orient;
     orient.azimuth_deg = az_deg;
+
+    // Build a quick table to find max range for diagnostics
+    FireControlTable diag_table;
+    diag_table.build(sim, p.muzzle_speed, az_deg, launch_height,
+                     false, 50, target_alt);
+    out.max_range_m = diag_table.max_range_m();
 
     FireSolution sol = solve_elevation(sim, orient, range_m,
                                        p.muzzle_speed,
@@ -542,7 +552,12 @@ int main()
         } else if (computing) {
             DrawText("  Computing...", mx, y, 14, YELLOW); y += 20;
         } else {
-            DrawText("  No solution (target out of range)", mx, y, 14, { 220, 80, 80, 255 }); y += 20;
+            const Color err_col = { 220, 80, 80, 255 };
+            DrawText("  No solution", mx, y, 14, err_col); y += 18;
+            DrawText(TextFormat("  Range: %.0f m  Max: %.0f m",
+                     current.range_m, current.max_range_m), mx, y, 12, err_col); y += 16;
+            DrawText(TextFormat("  Alt diff: %+.1f m (launcher - target)",
+                     current.alt_diff_m), mx, y, 12, err_col); y += 16;
         }
 
         // ---- View Focus -----------------------------------------------------
