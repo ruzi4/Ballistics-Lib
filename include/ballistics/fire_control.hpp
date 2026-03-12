@@ -44,23 +44,28 @@ struct FireSolution {
 ///        Typical wall time: 5–100 ms depending on trajectory length.
 ///        Use FireControlTable::lookup() for per-frame game queries.
 ///
-/// @param sim              Configured TrajectorySimulator (munition + atmosphere)
-/// @param orientation      Horizontal bearing from launcher to target
-/// @param range_m          Horizontal ground range to target (m)
-/// @param muzzle_speed_ms  Muzzle velocity (m/s)
-/// @param launch_height_m  Height of launcher above the target plane (m)
-/// @param high_angle       false = low-angle (direct fire), true = high-angle (plunging fire)
-/// @param tolerance_m      Bisection convergence threshold (m)  [default 0.1]
+/// @param sim                Configured TrajectorySimulator (munition + atmosphere)
+/// @param orientation        Horizontal bearing from launcher to target
+/// @param range_m            Horizontal ground range to target (m)
+/// @param muzzle_speed_ms    Muzzle velocity (m/s)
+/// @param launch_height_m    Height of launcher above the target plane (m)
+/// @param high_angle         false = low-angle (direct fire), true = high-angle (plunging fire)
+/// @param tolerance_m        Bisection convergence threshold (m)  [default 0.1]
+/// @param target_altitude_m  Altitude of the target / ground plane (m) [default 0.0].
+///                           Set to a non-zero value when the target is at a
+///                           different elevation than z = 0.
 ///
-/// @returns FireSolution with valid=true on success.
+/// @returns FireSolution with valid=true on success, valid=false if
+///          @p range_m exceeds the munition's maximum range.
 FireSolution solve_elevation(
     const TrajectorySimulator& sim,
     LauncherOrientation        orientation,
     double                     range_m,
     double                     muzzle_speed_ms,
-    double                     launch_height_m = 0.0,
-    bool                       high_angle      = false,
-    double                     tolerance_m     = 0.1);
+    double                     launch_height_m   = 0.0,
+    bool                       high_angle        = false,
+    double                     tolerance_m       = 0.1,
+    double                     target_altitude_m = 0.0);
 
 // ---------------------------------------------------------------------------
 // FireControlTable — O(log N) real-time lookup
@@ -108,25 +113,31 @@ public:
     /// Sweep @p num_samples elevation angles, simulate each trajectory,
     /// and build a range-sorted look-up table.
     ///
-    /// Thread-safe to call from any thread; the result is written atomically
-    /// to the internal vector before ready() returns true.
+    /// @note  Not thread-safe: build() must not be called concurrently with
+    ///        lookup(), ready(), or another build() on the same table instance.
+    ///        Run build() on a background thread only if the table object is
+    ///        not yet shared with other threads.
     ///
-    /// @param sim             Simulator configured with the desired munition
-    ///                        and atmospheric conditions.
-    /// @param muzzle_speed_ms Muzzle velocity (m/s).
-    /// @param azimuth_deg     Horizontal bearing used during the sweep (degrees).
-    ///                        Irrelevant in still air; set to the expected
-    ///                        firing direction when wind is present.
-    /// @param launch_height_m Launcher height above the target plane (m).
-    /// @param high_angle      false = direct-fire table (elevation < theta_max)
-    ///                        true  = plunging-fire table (elevation > theta_max)
-    /// @param num_samples     Number of elevation samples to sweep.
+    /// @param sim               Simulator configured with the desired munition
+    ///                          and atmospheric conditions.
+    /// @param muzzle_speed_ms   Muzzle velocity (m/s).
+    /// @param azimuth_deg       Horizontal bearing used during the sweep (degrees).
+    ///                          Irrelevant in still air; set to the expected
+    ///                          firing direction when wind is present.
+    /// @param launch_height_m   Launcher height above the target plane (m).
+    /// @param high_angle        false = direct-fire table (elevation < theta_max)
+    ///                          true  = plunging-fire table (elevation > theta_max)
+    /// @param num_samples       Number of elevation samples to sweep.
+    /// @param target_altitude_m Altitude of the target / ground plane (m).
+    ///                          Defaults to 0.  Set to a non-zero value when
+    ///                          firing at an elevated or depressed target.
     void build(const TrajectorySimulator& sim,
                double muzzle_speed_ms,
-               double azimuth_deg     = 0.0,
-               double launch_height_m = 0.0,
-               bool   high_angle      = false,
-               int    num_samples     = 500);
+               double azimuth_deg       = 0.0,
+               double launch_height_m   = 0.0,
+               bool   high_angle        = false,
+               int    num_samples       = 500,
+               double target_altitude_m = 0.0);
 
     // -------------------------------------------------------------------
     // Real-time lookup

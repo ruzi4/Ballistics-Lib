@@ -5,6 +5,7 @@
 /// Build and run: ctest --output-on-failure
 
 #include <ballistics/ballistics.hpp>
+#include <ballistics/math/math_constants.hpp>
 
 #include <chrono>
 #include <cmath>
@@ -248,7 +249,7 @@ static void test_drag_reduces_range() {
 
     const double v0        = 600.0;  // m/s muzzle velocity
     const double angle_deg = 30.0;
-    const double angle_rad = angle_deg * (3.14159265358979323846 / 180.0);
+    const double angle_rad = angle_deg * (kDegToRad);
 
     ProjectileState initial;
     initial.position = Vec3{0.0, 0.0, 0.0};
@@ -292,7 +293,7 @@ static void test_wind() {
     AtmosphericConditions tailwind = still;
     tailwind.wind.velocity_ms = Vec3{50.0, 0.0, 0.0};  // 50 m/s tailwind
 
-    const double angle_rad = 30.0 * (3.14159265358979323846 / 180.0);
+    const double angle_rad = 30.0 * (kDegToRad);
     ProjectileState initial;
     initial.position = Vec3{0.0, 0.0, 1.0};
     initial.velocity = Vec3{400.0 * std::cos(angle_rad), 0.0,
@@ -457,8 +458,8 @@ static void test_fire_control_basic() {
     CHECK(sol.flight_time_ms > 0.0);
 
     // Verify the solution: re-simulate with the returned elevation angle
-    const double el = sol.elevation_deg * (3.14159265358979323846 / 180.0);
-    const double az_rad = az * (3.14159265358979323846 / 180.0);
+    const double el = sol.elevation_deg * (kDegToRad);
+    const double az_rad = az * (kDegToRad);
 
     ProjectileState initial;
     initial.position = {};
@@ -699,6 +700,159 @@ static void test_table_build_timing() {
 }
 
 // ---------------------------------------------------------------------------
+// Additional tests added to address review findings
+// ---------------------------------------------------------------------------
+
+static void test_table_high_angle() {
+    SECTION("FireControlTable: high-angle build and lookup");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    FireControlTable table;
+    CHECK(!table.ready());
+
+    table.build(sim, 600.0, 0.0, 0.0, /*high_angle=*/true, 500);
+
+    CHECK(table.ready());
+    CHECK(table.max_range_m() > 0.0);
+    CHECK(!table.entries().empty());
+
+    // Verify a mid-range lookup is valid and has a high elevation angle
+    const double test_range = table.max_range_m() * 0.5;
+    FireSolution sol = table.lookup(test_range);
+    CHECK(sol.valid);
+    // High-angle solution must be above 45°
+    CHECK(sol.elevation_deg > 45.0);
+    CHECK(sol.flight_time_ms > 0.0);
+
+    std::printf("  High-angle table: max_range=%.1f m  entries=%zu\n",
+                table.max_range_m(), table.entries().size());
+    std::printf("  Lookup at 50%% range: elev=%.2f°  ToF=%.0f ms\n",
+                sol.elevation_deg, sol.flight_time_ms);
+}
+
+static void test_table_lookup_below_min_range() {
+    SECTION("FireControlTable: lookup below minimum entry returns valid=false");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    // High-angle table: near-vertical shots produce short ranges but not
+    // exactly 0, so the first entry has a meaningful positive minimum range.
+    FireControlTable table;
+    table.build(sim, 600.0, 0.0, 0.0, /*high_angle=*/true, 100);
+    CHECK(table.ready());
+
+    const double min_range = table.entries().front().range_m;
+    std::printf("  High-angle table minimum range: %.2f m\n", min_range);
+
+    // Any range below the minimum entry must return invalid
+    if (min_range > 1.0) {
+        FireSolution below = table.lookup(min_range * 0.5);
+        CHECK(!below.valid);
+        std::printf("  lookup(%.2f) = valid=%s (expected false)\n",
+                    min_range * 0.5, below.valid ? "true" : "false");
+    }
+
+    // Negative range must always be invalid
+    FireSolution neg = table.lookup(-1.0);
+    CHECK(!neg.valid);
+
+    // Exact minimum entry range must be valid
+    FireSolution exact = table.lookup(min_range);
+    CHECK(exact.valid);
+}
+
+static void test_fire_control_wind() {
+    SECTION("solve_elevation: azimuth matters when wind is present");
+
+    // With a crosswind, firing East vs West should require different elevations
+    // to reach the same range because the headwind/tailwind component differs.
+    AtmosphericConditions atm_wind = still_atm();
+    atm_wind.wind.velocity_ms = Vec3{20.0, 0.0, 0.0};  // 20 m/s eastward wind
+
+    TrajectorySimulator sim(drag_munition(), atm_wind);
+
+    const double muzzle_speed = 500.0;
+    const double range        = 400.0;
+
+    // Firing East (+x): tailwind → effectively less drag → lower elevation needed
+    FireSolution east = solve_elevation(sim, LauncherOrientation{90.0},
+                                        range, muzzle_speed);
+    // Firing West (-x): headwind → more drag → higher elevation needed
+    FireSolution west = solve_elevation(sim, LauncherOrientation{270.0},
+                                        range, muzzle_speed);
+
+    CHECK(east.valid);
+    CHECK(west.valid);
+
+    std::printf("  Wind 20 m/s East — firing East: elev=%.3f°  West: elev=%.3f°\n",
+                east.elevation_deg, west.elevation_deg);
+
+    // Eastward (tailwind) shot needs less elevation than westward (headwind) shot
+    CHECK(east.elevation_deg < west.elevation_deg);
+}
+
+static void test_isa_above_stratopause() {
+    SECTION("isa_conditions: above 20 km (clamped stratopause fallback)");
+
+    // The ISA model covers 0–20 km explicitly.  Above that, the implementation
+    // should use a clamped fallback rather than crashing or producing garbage.
+    auto lo  = isa_conditions(20000.0);   // top of modelled stratosphere
+    auto hi  = isa_conditions(25000.0);   // above model range
+    auto vhi = isa_conditions(50000.0);   // well above model range
+
+    // Must not produce NaN or obviously wrong values
+    CHECK(lo.air_density_kg_m3  > 0.0);
+    CHECK(hi.air_density_kg_m3  > 0.0);
+    CHECK(vhi.air_density_kg_m3 > 0.0);
+
+    // Density should be lower at higher altitudes (or equal if clamped)
+    CHECK(hi.air_density_kg_m3 <= lo.air_density_kg_m3);
+
+    std::printf("  ISA density: 20km=%.4f  25km=%.4f  50km=%.4f kg/m³\n",
+                lo.air_density_kg_m3, hi.air_density_kg_m3,
+                vhi.air_density_kg_m3);
+}
+
+static void test_munition_library_load_file() {
+    SECTION("MunitionLibrary: load() from file path");
+
+    MunitionLibrary lib;
+    // Try a few candidate paths since the working directory varies by runner
+    const char* candidates[] = {
+        "data/munitions.json",
+        "../data/munitions.json",
+        "../../data/munitions.json"
+    };
+    bool loaded = false;
+    for (const char* path : candidates) {
+        try {
+            lib.load(path);
+            loaded = true;
+            std::printf("  Loaded from: %s\n", path);
+            break;
+        } catch (const std::runtime_error&) {}
+    }
+    if (!loaded)
+        std::printf("  Skipped: data/munitions.json not found in any candidate path\n");
+
+    if (loaded) {
+        CHECK(lib.size() > 0);
+        std::printf("  Loaded %zu munition(s) from file\n", lib.size());
+        for (const auto& name : lib.names())
+            std::printf("    - %s\n", name.c_str());
+    }
+
+    // Non-existent file must throw runtime_error
+    bool threw = false;
+    try { MunitionLibrary b; b.load("/tmp/does_not_exist_xyz.json"); }
+    catch (const std::runtime_error&) { threw = true; }
+    CHECK(threw);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -723,6 +877,11 @@ int main() {
     test_table_out_of_range();
     test_table_lookup_realtime_performance();
     test_table_build_timing();
+    test_table_high_angle();
+    test_table_lookup_below_min_range();
+    test_fire_control_wind();
+    test_isa_above_stratopause();
+    test_munition_library_load_file();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);
