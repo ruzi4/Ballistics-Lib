@@ -974,6 +974,483 @@ static void test_invalid_muzzle_speed() {
 }
 
 // ---------------------------------------------------------------------------
+// Altitude variation tests
+// ---------------------------------------------------------------------------
+
+// Helper: re-simulate with a given elevation and azimuth, return impact
+// (horizontal range, altitude).  The initial position is at absolute altitude
+// (target_alt + launch_height).  The ground plane is target_alt.
+struct ImpactResult { double h_range_m; double z_m; double time_s; };
+
+static ImpactResult resimulate(const TrajectorySimulator& sim,
+                                double elevation_deg,
+                                double azimuth_deg,
+                                double muzzle_speed_ms,
+                                double launch_height_m,
+                                double target_alt_m)
+{
+    const double el    = elevation_deg * kDegToRad;
+    const double az    = azimuth_deg   * kDegToRad;
+    const Vec3   h_dir = {std::sin(az), std::cos(az), 0.0};
+
+    ProjectileState st;
+    st.position = Vec3{0.0, 0.0, target_alt_m + launch_height_m};
+    st.velocity = muzzle_speed_ms * (std::cos(el) * h_dir + Vec3{0.0, 0.0, std::sin(el)});
+    st.time     = 0.0;
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 240.0;
+    cfg.max_time = 120.0;
+    cfg.ground_z = target_alt_m;
+    cfg.use_rk4  = true;
+
+    ProjectileState last = st;
+    sim.simulate(st, cfg, [&last](const ProjectileState& s) {
+        last = s;
+        return true;
+    });
+
+    const double hr = std::sqrt(last.position.x * last.position.x
+                               + last.position.y * last.position.y);
+    return {hr, last.position.z, last.time};
+}
+
+// ---------------------------------------------------------------------------
+// Launcher significantly above target — various non-similar altitudes
+// ---------------------------------------------------------------------------
+static void test_altitude_launcher_above_target() {
+    SECTION("Altitude: launcher above target, various altitude pairs");
+
+    // Use 5.56x45 and 7.62x51 from the munitions file
+    MunitionLibrary lib;
+    bool loaded = false;
+    for (const char* p : {"data/munitions.json",
+                           "../data/munitions.json",
+                           "../../data/munitions.json"}) {
+        try { lib.load(p); loaded = true; break; }
+        catch (const std::runtime_error&) {}
+    }
+    if (!loaded) {
+        std::printf("  Skipped: munitions file not found\n");
+        return;
+    }
+
+    // Scenario table: {launcher_alt_m, target_alt_m, munition_name, muzzle_ms, range_m}
+    // All ranges are well within the munition's achievable envelope.
+    // Altitude differences are deliberately large and non-similar.
+    struct Scenario {
+        double launcher_alt;
+        double target_alt;
+        const char* munition;
+        double muzzle;
+        double range;
+        const char* label;
+    };
+    const Scenario scenarios[] = {
+        // 5.56 — launcher high above target
+        { 600.0,   0.0, "5.56x45_m855_62gr", 930.0, 400.0,
+          "5.56: launcher 600m, target 0m, range 400m" },
+        { 1200.0, 200.0, "5.56x45_m855_62gr", 930.0, 500.0,
+          "5.56: launcher 1200m, target 200m, range 500m" },
+        { 800.0,  50.0, "5.56x45_m855_62gr", 930.0, 350.0,
+          "5.56: launcher 800m, target 50m, range 350m" },
+        // 7.62 — different altitude pairs
+        { 500.0,   0.0, "7.62x51_m80_147gr", 853.0, 400.0,
+          "7.62: launcher 500m, target 0m, range 400m" },
+        { 1000.0, 300.0, "7.62x51_m80_147gr", 853.0, 500.0,
+          "7.62: launcher 1000m, target 300m, range 500m" },
+        // .338 Lapua — large altitude differences
+        { 1500.0, 100.0, "338_lapua_250gr", 930.0, 700.0,
+          ".338: launcher 1500m, target 100m, range 700m" },
+        { 2000.0, 500.0, "338_lapua_250gr", 930.0, 800.0,
+          ".338: launcher 2000m, target 500m, range 800m" },
+    };
+
+    for (const auto& s : scenarios) {
+        const double launch_height = s.launcher_alt - s.target_alt;
+        AtmosphericConditions atm = isa_conditions(s.target_alt);
+        const MunitionSpec& spec = lib.get(s.munition);
+        TrajectorySimulator sim(spec, atm);
+
+        FireSolution sol = solve_elevation(sim,
+                                           LauncherOrientation{0.0},
+                                           s.range,
+                                           s.muzzle,
+                                           launch_height,
+                                           /*high_angle=*/false,
+                                           /*tolerance_m=*/0.5,
+                                           s.target_alt);
+        std::printf("  [%s]\n    elev=%.3f°  ToF=%.0f ms  valid=%s\n",
+                    s.label, sol.elevation_deg, sol.flight_time_ms,
+                    sol.valid ? "true" : "false");
+        CHECK(sol.valid);
+
+        if (!sol.valid) continue;
+
+        // Re-simulate and verify the solution
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0,
+                                      s.muzzle, launch_height, s.target_alt);
+        std::printf("    re-sim: h_range=%.2f m  z=%.2f m (target %.2f m)\n",
+                    imp.h_range_m, imp.z_m, s.target_alt);
+        // Impact horizontal range must be within 1 m of requested range
+        CHECK_NEAR(imp.h_range_m, s.range, 1.0);
+        // Impact altitude must be at target plane within 1 m
+        CHECK_NEAR(imp.z_m, s.target_alt, 1.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Launcher below target — two sub-tests:
+//
+// Part A: impossible small-range cases.  The fire control system finds target
+//         impact via the DESCENDING crossing of target_z_m.  When the launcher
+//         is below the target the minimum achievable range on the descending
+//         path can be several km, far larger than a direct-line shot.  Requests
+//         for ranges shorter than that minimum must return valid=false.
+//
+// Part B: achievable long-range cases.  The range is determined dynamically
+//         from the FireControlTable envelope and re-simulated to verify accuracy.
+// ---------------------------------------------------------------------------
+static void test_altitude_launcher_below_target() {
+    SECTION("Altitude: launcher below target — impossible small ranges → valid=false");
+
+    MunitionLibrary lib;
+    bool loaded = false;
+    for (const char* p : {"data/munitions.json",
+                           "../data/munitions.json",
+                           "../../data/munitions.json"}) {
+        try { lib.load(p); loaded = true; break; }
+        catch (const std::runtime_error&) {}
+    }
+    if (!loaded) {
+        std::printf("  Skipped: munitions file not found\n");
+        return;
+    }
+
+    // These ranges are far below the minimum achievable descending-crossing
+    // range for each scenario; valid=false is the correct answer.
+    struct ImpossibleCase {
+        double launcher_alt, target_alt, muzzle, range;
+        const char* munition;
+        const char* label;
+    };
+    const ImpossibleCase impossible[] = {
+        { 0.0,  200.0, 930.0, 300.0, "5.56x45_m855_62gr",
+          "5.56: launcher 0m, target 200m, range 300m (too short)" },
+        { 0.0,  400.0, 853.0, 350.0, "7.62x51_m80_147gr",
+          "7.62: launcher 0m, target 400m, range 350m (too short)" },
+        { 0.0,  300.0, 930.0, 200.0, "338_lapua_250gr",
+          ".338: launcher 0m, target 300m, range 200m (too short)" },
+    };
+
+    for (const auto& s : impossible) {
+        const double lh = s.launcher_alt - s.target_alt;
+        AtmosphericConditions atm = isa_conditions(s.launcher_alt);
+        TrajectorySimulator sim(lib.get(s.munition), atm);
+
+        FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
+                                           s.range, s.muzzle,
+                                           lh, false, 0.5, s.target_alt);
+        std::printf("  [%s]\n    valid=%s (expected false)\n",
+                    s.label, sol.valid ? "true" : "false");
+        CHECK(!sol.valid);
+    }
+
+    // -----------------------------------------------------------------------
+    SECTION("Altitude: launcher below target — achievable ranges (high-angle) → valid=true");
+
+    // When the launcher is below the target the projectile must arc above
+    // the target plane and descend onto it — this is inherently high-angle
+    // (plunging fire).  The low-angle regime has no solutions here because
+    // every angle < theta_max leaves the projectile below target_z_m on
+    // the descending branch.  Callers must set high_angle=true.
+    //
+    // We determine the achievable range from a coarse high-angle table and
+    // test at 50 % of the maximum range.
+    struct AchievableCase {
+        double launcher_alt, target_alt, muzzle;
+        const char* munition;
+        const char* label;
+    };
+    const AchievableCase achievable[] = {
+        { 0.0,  100.0, 930.0, "5.56x45_m855_62gr",
+          "5.56 (high-angle): launcher 0m, target 100m" },
+        { 100.0, 300.0, 853.0, "7.62x51_m80_147gr",
+          "7.62 (high-angle): launcher 100m, target 300m" },
+        { 0.0,  200.0, 930.0, "338_lapua_250gr",
+          ".338 (high-angle): launcher 0m, target 200m" },
+        { 200.0, 600.0, 930.0, "338_lapua_250gr",
+          ".338 (high-angle): launcher 200m, target 600m" },
+    };
+
+    for (const auto& s : achievable) {
+        const double lh = s.launcher_alt - s.target_alt;  // negative
+        AtmosphericConditions atm = isa_conditions(s.launcher_alt);
+        TrajectorySimulator sim(lib.get(s.munition), atm);
+
+        // Use a coarse HIGH-ANGLE table to find the achievable range envelope
+        FireControlTable probe;
+        probe.build(sim, s.muzzle, 0.0, lh,
+                    /*high_angle=*/true, 80, s.target_alt);
+
+        if (!probe.ready() || probe.max_range_m() < 200.0) {
+            std::printf("  [%s] Skipped: max_range=%.0f m too small\n",
+                        s.label, probe.max_range_m());
+            continue;
+        }
+
+        const double test_range = probe.max_range_m() * 0.5;
+
+        // Must use high_angle=true: plunging trajectory is the only option
+        // when the launcher is below the target plane.
+        FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
+                                           test_range, s.muzzle,
+                                           lh, /*high_angle=*/true,
+                                           0.5, s.target_alt);
+        std::printf("  [%s]\n    max_range=%.0f m  test_range=%.0f m\n"
+                    "    elev=%.3f°  ToF=%.0f ms  valid=%s\n",
+                    s.label, probe.max_range_m(), test_range,
+                    sol.elevation_deg, sol.flight_time_ms,
+                    sol.valid ? "true" : "false");
+        CHECK(sol.valid);
+
+        if (!sol.valid) continue;
+        // High-angle plunging shot: elevation is positive (fires upward)
+        CHECK(sol.elevation_deg > 0.0);
+
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0,
+                                      s.muzzle, lh, s.target_alt);
+        std::printf("    re-sim: h_range=%.2f m  z=%.2f m (target %.2f m)\n",
+                    imp.h_range_m, imp.z_m, s.target_alt);
+        CHECK_NEAR(imp.h_range_m, test_range, 2.0);
+        CHECK_NEAR(imp.z_m, s.target_alt, 1.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Both launcher and target at non-zero altitudes (various non-similar pairs)
+// ---------------------------------------------------------------------------
+static void test_altitude_both_nonzero() {
+    SECTION("Altitude: both launcher and target at non-zero altitudes");
+
+    MunitionLibrary lib;
+    bool loaded = false;
+    for (const char* p : {"data/munitions.json",
+                           "../data/munitions.json",
+                           "../../data/munitions.json"}) {
+        try { lib.load(p); loaded = true; break; }
+        catch (const std::runtime_error&) {}
+    }
+    if (!loaded) {
+        std::printf("  Skipped: munitions file not found\n");
+        return;
+    }
+
+    struct Scenario {
+        double launcher_alt;
+        double target_alt;
+        const char* munition;
+        double muzzle;
+        double range;  // 0 = determine dynamically from FireControlTable
+        const char* label;
+    };
+    const Scenario scenarios[] = {
+        // Launcher above target, both non-zero — ranges are well within envelope
+        { 800.0,  200.0, "5.56x45_m855_62gr", 930.0, 400.0,
+          "5.56: launcher 800m, target 200m (above), range 400m" },
+        { 1500.0, 600.0, "7.62x51_m80_147gr", 853.0, 500.0,
+          "7.62: launcher 1500m, target 600m (above), range 500m" },
+        // Launcher below target — use range=0 to trigger dynamic determination
+        { 300.0,  900.0, "338_lapua_250gr", 930.0, 0.0,
+          ".338: launcher 300m, target 900m (below), dynamic range" },
+        { 100.0,  500.0, "338_lapua_250gr", 930.0, 0.0,
+          ".338: launcher 100m, target 500m (below), dynamic range" },
+    };
+
+    for (const auto& s : scenarios) {
+        const double launch_height = s.launcher_alt - s.target_alt;
+        AtmosphericConditions atm = isa_conditions(
+            std::min(s.launcher_alt, s.target_alt));
+        const MunitionSpec& spec = lib.get(s.munition);
+        TrajectorySimulator sim(spec, atm);
+
+        double test_range = s.range;
+        // Launcher-below-target requires high-angle (plunging) fire:
+        // the simulation only detects descending crossings of target_z_m.
+        const bool below_target = (s.launcher_alt < s.target_alt);
+
+        if (test_range <= 0.0) {
+            // Determine the achievable range dynamically
+            FireControlTable probe;
+            probe.build(sim, s.muzzle, 45.0, launch_height,
+                        /*high_angle=*/true, 80, s.target_alt);
+            if (!probe.ready() || probe.max_range_m() < 200.0) {
+                std::printf("  [%s] Skipped: max_range=%.0f m too small\n",
+                            s.label, probe.max_range_m());
+                continue;
+            }
+            test_range = probe.max_range_m() * 0.5;
+        }
+
+        FireSolution sol = solve_elevation(sim,
+                                           LauncherOrientation{45.0},
+                                           test_range,
+                                           s.muzzle,
+                                           launch_height,
+                                           /*high_angle=*/below_target,
+                                           /*tolerance_m=*/0.5,
+                                           s.target_alt);
+        std::printf("  [%s]\n    range=%.0f m  elev=%.3f°  ToF=%.0f ms  valid=%s\n",
+                    s.label, test_range, sol.elevation_deg, sol.flight_time_ms,
+                    sol.valid ? "true" : "false");
+        CHECK(sol.valid);
+
+        if (!sol.valid) continue;
+
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 45.0,
+                                      s.muzzle, launch_height, s.target_alt);
+        std::printf("    re-sim: h_range=%.2f m  z=%.2f m (target %.2f m)\n",
+                    imp.h_range_m, imp.z_m, s.target_alt);
+        CHECK_NEAR(imp.h_range_m, test_range, 2.0);
+        CHECK_NEAR(imp.z_m, s.target_alt, 1.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FireControlTable with altitude variation
+// ---------------------------------------------------------------------------
+static void test_altitude_fire_table() {
+    SECTION("Altitude: FireControlTable with non-similar launcher/target altitudes");
+
+    MunitionLibrary lib;
+    bool loaded = false;
+    for (const char* p : {"data/munitions.json",
+                           "../data/munitions.json",
+                           "../../data/munitions.json"}) {
+        try { lib.load(p); loaded = true; break; }
+        catch (const std::runtime_error&) {}
+    }
+    if (!loaded) {
+        std::printf("  Skipped: munitions file not found\n");
+        return;
+    }
+
+    // Launcher well above target — elevation is negative (shooting downward)
+    {
+        const double launcher_alt  = 700.0;
+        const double target_alt    = 0.0;
+        const double launch_height = launcher_alt - target_alt;  // +700
+        AtmosphericConditions atm = isa_conditions(target_alt);
+        TrajectorySimulator sim(lib.get("7.62x51_m80_147gr"), atm);
+
+        FireControlTable table;
+        table.build(sim, 853.0, 0.0, launch_height, false, 300, target_alt);
+        CHECK(table.ready());
+        CHECK(table.max_range_m() > 0.0);
+
+        const double test_range = table.max_range_m() * 0.4;
+        FireSolution sol = table.lookup(test_range);
+        CHECK(sol.valid);
+        // Launcher is 700 m above the target; a downward shot is expected.
+        // Elevation may legitimately be negative here — do NOT check > 0.
+        std::printf("  Table (launcher 700m, target 0m): "
+                    "max=%.1f m, lookup@40%%=%.1f m → elev=%.2f°\n",
+                    table.max_range_m(), test_range, sol.elevation_deg);
+
+        // Re-simulate to verify the table's interpolated solution
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0,
+                                      853.0, launch_height, target_alt);
+        CHECK_NEAR(imp.h_range_m, test_range, test_range * 0.02);  // 2 % tolerance
+        CHECK_NEAR(imp.z_m, target_alt, 1.0);
+    }
+
+    // Launcher below target — elevation must be positive (shooting upward)
+    {
+        const double launcher_alt  = 0.0;
+        const double target_alt    = 200.0;
+        const double launch_height = launcher_alt - target_alt;   // -200
+        AtmosphericConditions atm = isa_conditions(launcher_alt);
+        TrajectorySimulator sim(lib.get("338_lapua_250gr"), atm);
+
+        FireControlTable table;
+        table.build(sim, 930.0, 0.0, launch_height, /*high_angle=*/true, 300, target_alt);
+        CHECK(table.ready());
+        CHECK(table.max_range_m() > 0.0);
+
+        // Use 50 % of the achievable max — guaranteed to be in-range
+        const double test_range = table.max_range_m() * 0.5;
+        FireSolution sol = table.lookup(test_range);
+        CHECK(sol.valid);
+        // Must shoot upward to arc over and hit the elevated ground plane
+        CHECK(sol.elevation_deg > 0.0);
+        std::printf("  Table (launcher 0m, target 200m): "
+                    "max=%.1f m, lookup@50%%=%.1f m → elev=%.2f°\n",
+                    table.max_range_m(), test_range, sol.elevation_deg);
+
+        // Re-simulate to verify
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0,
+                                      930.0, launch_height, target_alt);
+        CHECK_NEAR(imp.h_range_m, test_range, test_range * 0.02);
+        CHECK_NEAR(imp.z_m, target_alt, 1.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// max_time adequacy: verify that altitude scenarios don't trip the 60 s ceiling
+// ---------------------------------------------------------------------------
+static void test_altitude_flight_time_within_max() {
+    SECTION("Altitude: returned flight times are reasonable (< 60 s)");
+
+    MunitionLibrary lib;
+    bool loaded = false;
+    for (const char* p : {"data/munitions.json",
+                           "../data/munitions.json",
+                           "../../data/munitions.json"}) {
+        try { lib.load(p); loaded = true; break; }
+        catch (const std::runtime_error&) {}
+    }
+    if (!loaded) {
+        std::printf("  Skipped: munitions file not found\n");
+        return;
+    }
+
+    // Only use launcher-above-target scenarios here: launcher-below at small
+    // ranges are physically impossible and correctly return valid=false.
+    // Their flight times are therefore not meaningful to test.
+    struct Scenario {
+        double launcher_alt, target_alt, muzzle, range;
+        const char* munition;
+    };
+    const Scenario scenarios[] = {
+        {  600.0,   0.0, 930.0, 400.0, "5.56x45_m855_62gr" },
+        { 1000.0, 100.0, 853.0, 500.0, "7.62x51_m80_147gr" },
+        { 2000.0, 300.0, 930.0, 700.0, "338_lapua_250gr"   },
+        {  500.0,  50.0, 853.0, 350.0, "7.62x51_m80_147gr" },
+    };
+
+    for (const auto& s : scenarios) {
+        const double launch_height = s.launcher_alt - s.target_alt;
+        AtmosphericConditions atm = isa_conditions(s.target_alt);
+        TrajectorySimulator sim(lib.get(s.munition), atm);
+
+        FireSolution sol = solve_elevation(sim,
+                                           LauncherOrientation{0.0},
+                                           s.range, s.muzzle,
+                                           launch_height,
+                                           false, 0.5, s.target_alt);
+        CHECK(sol.valid);
+        if (sol.valid) {
+            // Flight time must be well under the 60 000 ms ceiling
+            CHECK(sol.flight_time_ms < 60000.0);
+            std::printf("  launcher=%.0fm target=%.0fm range=%.0fm → "
+                        "elev=%.2f° ToF=%.0f ms\n",
+                        s.launcher_alt, s.target_alt, s.range,
+                        sol.elevation_deg, sol.flight_time_ms);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1007,6 +1484,13 @@ int main() {
     test_table_wind_azimuth();
     test_build_num_samples_guard();
     test_invalid_muzzle_speed();
+
+    // Altitude variation tests
+    test_altitude_launcher_above_target();
+    test_altitude_launcher_below_target();
+    test_altitude_both_nonzero();
+    test_altitude_fire_table();
+    test_altitude_flight_time_within_max();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);
