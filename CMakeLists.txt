@@ -4,6 +4,13 @@ project(BallisticsLib VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Ensure UTF-8 source and execution character sets on MSVC so that
+# µ (U+00B5) in printf strings is handled correctly regardless of the
+# system ANSI code page.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 set(PROJECT_NAME ballistics)
 
 # Default to Release for real-time performance
@@ -65,6 +72,10 @@ target_include_directories (${PROJECT_NAME}
 # Aggressive optimisation flags for real-time performance
 target_compile_options(ballistics PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -march=native -ffast-math>
+    # -ffast-math implies -ffinite-math-only; Clang then warns when
+    # nlohmann_json's headers use std::isfinite / infinity() (third-party code
+    # we cannot modify).  The warning is not actionable, so silence it.
+    $<$<CXX_COMPILER_ID:Clang>:-Wno-nan-infinity-disabled>
     $<$<CXX_COMPILER_ID:MSVC>:/O2 /fp:fast>
 )
 

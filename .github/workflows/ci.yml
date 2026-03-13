@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            compiler: MSVC
+            cmake_generator: ""
+            cmake_extra: "-DCMAKE_BUILD_TYPE=Release"
+            build_config: "--config Release"
+            test_config: "--build-config Release"
+          - os: ubuntu-latest
+            compiler: GCC
+            cmake_generator: "-G Ninja"
+            cmake_extra: "-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++"
+            build_config: ""
+            test_config: ""
+          - os: ubuntu-latest
+            compiler: Clang
+            cmake_generator: "-G Ninja"
+            cmake_extra: "-DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++"
+            build_config: ""
+            test_config: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja (Ubuntu)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          ${{ matrix.cmake_generator }}
+          ${{ matrix.cmake_extra }}
+          -DBALLISTICS_BUILD_TESTS=ON
+          -DBALLISTICS_BUILD_EXAMPLES=OFF
+
+      - name: Build
+        run: cmake --build build ${{ matrix.build_config }}
+
+      - name: Test
+        run: ctest --test-dir build ${{ matrix.test_config }} --output-on-failure

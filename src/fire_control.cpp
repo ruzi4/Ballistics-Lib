@@ -221,11 +221,15 @@ void FireControlTable::build(
     // giving ~num_samples entries rather than wasting most on the discarded half.
     // Note: uses kBuildDt resolution; a slight theta_max error is tolerated
     // because the monotone filter in step 3 absorbs it.
-    auto [theta_max, r_max_unused] =
+    auto [theta_max_sb, r_max_unused] =
         find_max_range_angle(sim, azimuth_deg, muzzle_speed_ms, launch_height_m,
                              kLoSearch, kHiSearch, target_altitude_m,
                              /*iterations=*/20);
     (void)r_max_unused;
+    // Copy out of the structured binding into a plain variable.
+    // C++17 does not allow lambdas to capture structured bindings directly;
+    // that was only standardised in C++20.
+    const double theta_max = theta_max_sb;
 
     // Determine the effective lower bound of the sweep by locating the first
     // angle that yields a positive range.  When the launcher is well above the
