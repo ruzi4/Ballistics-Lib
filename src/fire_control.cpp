@@ -42,7 +42,7 @@ ShotResult shoot(
 
     SimulationConfig cfg;
     cfg.dt       = sim_dt;
-    cfg.max_time = 60.0;   // 1 minute ceiling (was 600 s — needlessly long)
+    cfg.max_time = 60.0;   // 1-minute ceiling; enough for any munition at max elevation
     cfg.ground_z = target_z_m;
     cfg.use_rk4  = true;
 

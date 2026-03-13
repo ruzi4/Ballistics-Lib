@@ -77,13 +77,13 @@ public:
 
         build_started_ = Clock::now();
 
-        // Capture sim by value so the async task owns its own copy.
-        // This prevents a dangling reference if the caller's sim object
-        // goes out of scope before the background task reads it.
+        // Copy sim into the closure so the async task owns its own instance.
+        // The caller's sim may be a stack-local (e.g. sim2 at frame 60) that
+        // is destroyed before the background task runs.
         pending_ = std::async(std::launch::async,
-            [=, sim = sim]() -> FireControlTable {
+            [=, sim_copy = sim]() -> FireControlTable {
                 FireControlTable t;
-                t.build(sim, muzzle_speed_ms, azimuth_deg,
+                t.build(sim_copy, muzzle_speed_ms, azimuth_deg,
                         launch_height_m, high_angle, num_samples);
                 return t;
             });
@@ -101,7 +101,7 @@ public:
         if (pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
             return;
 
-        // Build finished — swap atomically
+        // Build finished — install new table (main thread only, no locking needed)
         active_ = std::make_shared<FireControlTable>(pending_.get());
         const double build_ms = elapsed_ms(build_started_, Clock::now());
         std::printf("[FireControlSystem] New table ready: max_range=%.1f m  "

@@ -61,12 +61,12 @@ void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
     const double v_rel_sq  = v_rel.norm_sq();
 
     // Drag: a_drag = -k_rho · |v_rel| · v_rel
-    // k_rho uses the current air density (may differ from precomputed if
-    // altitude-varying density is requested by the caller).
-    const double k_rho = 0.5 * munition_.drag_coefficient
-                             * rho
-                             * munition_.reference_area_m2
-                             / munition_.mass_kg;
+    // Scale the precomputed drag_k_ (which uses the fixed atmosphere density)
+    // by the ratio rho / rho_fixed.  This avoids re-reading three munition
+    // fields and saves 2 multiplications per derivatives() call (= 8 per RK4
+    // step).  Falls back to zero when rho_fixed == 0 (vacuum atmosphere).
+    const double rho_fixed = atmosphere_.air_density_kg_m3;
+    const double k_rho = (rho_fixed > 0.0) ? drag_k_ * (rho / rho_fixed) : 0.0;
 
     const double v_rel_mag = std::sqrt(v_rel_sq);
     const Vec3   drag_acc  = -(k_rho * v_rel_mag) * v_rel;
@@ -110,10 +110,10 @@ ProjectileState TrajectorySimulator::step_rk4_rho(const ProjectileState& s,
     const Vec3 k4_p = dp;
     const Vec3 k4_v = dv;
 
-    const double inv6 = dt / 6.0;
+    const double dt_sixth = dt / 6.0;
     ProjectileState next;
-    next.position = s.position + inv6 * (k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p);
-    next.velocity = s.velocity + inv6 * (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v);
+    next.position = s.position + dt_sixth * (k1_p + 2.0 * k2_p + 2.0 * k3_p + k4_p);
+    next.velocity = s.velocity + dt_sixth * (k1_v + 2.0 * k2_v + 2.0 * k3_v + k4_v);
     next.time     = s.time + dt;
     return next;
 }

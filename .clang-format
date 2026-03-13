@@ -1,0 +1,82 @@
+---
+# Ballistics-Lib clang-format configuration
+# Run: clang-format -i <files>  or  cmake --build build --target clang-format
+Language:        Cpp
+Standard:        c++17
+
+# -----------------------------------------------------------------------
+# Indentation & column limit
+# -----------------------------------------------------------------------
+IndentWidth:               4
+ContinuationIndentWidth:   4
+ColumnLimit:               100
+TabWidth:                  4
+UseTab:                    Never
+
+# -----------------------------------------------------------------------
+# Brace style — keep opening brace on the same line (K&R style)
+# -----------------------------------------------------------------------
+BreakBeforeBraces: Attach
+
+# -----------------------------------------------------------------------
+# Alignment — match the existing style of aligned declarations
+# -----------------------------------------------------------------------
+AlignConsecutiveAssignments:
+  Enabled:          true
+  AcrossEmptyLines: false
+  AcrossComments:   false
+AlignConsecutiveDeclarations:
+  Enabled:          true
+  AcrossEmptyLines: false
+  AcrossComments:   false
+AlignTrailingComments:
+  Kind:             Always
+  OverEmptyLines:   1
+
+# -----------------------------------------------------------------------
+# Pointer / reference alignment — left (const Vec3& v, not Vec3 &v)
+# -----------------------------------------------------------------------
+PointerAlignment:   Left
+ReferenceAlignment: Left
+
+# -----------------------------------------------------------------------
+# Function arguments & parameters
+# -----------------------------------------------------------------------
+AllowShortFunctionsOnASingleLine:    InlineOnly
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine:        false
+AlwaysBreakTemplateDeclarations:     Yes
+BinPackArguments:                    false
+BinPackParameters:                   false
+
+# -----------------------------------------------------------------------
+# Include order — own header first, then grouped by type
+# -----------------------------------------------------------------------
+IncludeBlocks: Regroup
+IncludeCategories:
+  # ballistics library headers
+  - Regex:    '^"ballistics/'
+    Priority: 1
+  # project-relative headers
+  - Regex:    '^"'
+    Priority: 2
+  # C++ standard library
+  - Regex:    '^<[a-z_]+>'
+    Priority: 3
+  # Everything else (system headers, third-party)
+  - Regex:    '.*'
+    Priority: 4
+
+# -----------------------------------------------------------------------
+# Miscellaneous
+# -----------------------------------------------------------------------
+SortIncludes:              CaseSensitive
+SpaceBeforeParens:         ControlStatements
+SpaceAfterCStyleCast:      false
+SpacesInParentheses:       false
+Cpp11BracedListStyle:      true
+FixNamespaceComments:      true
+NamespaceIndentation:      None
+AccessModifierOffset:      -4
+ReflowComments:            true
+MaxEmptyLinesToKeep:       2
