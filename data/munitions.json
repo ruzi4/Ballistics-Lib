@@ -6,6 +6,7 @@
       "density_kg_m3": 11340,
       "reference_area_m2": 6.362e-5,
       "drag_coefficient": 0.295,
+      "muzzle_velocity_ms": 370.0,
       "diameter_m": 0.009
     },
     {
@@ -14,6 +15,7 @@
       "density_kg_m3": 10500,
       "reference_area_m2": 2.461e-5,
       "drag_coefficient": 0.307,
+      "muzzle_velocity_ms": 930.0,
       "diameter_m": 0.00556
     },
     {
@@ -22,6 +24,7 @@
       "density_kg_m3": 11000,
       "reference_area_m2": 4.560e-5,
       "drag_coefficient": 0.295,
+      "muzzle_velocity_ms": 853.0,
       "diameter_m": 0.00762
     },
     {
@@ -30,6 +33,7 @@
       "density_kg_m3": 11340,
       "reference_area_m2": 8.992e-5,
       "drag_coefficient": 0.230,
+      "muzzle_velocity_ms": 905.0,
       "diameter_m": 0.00858
     },
     {
@@ -38,6 +42,7 @@
       "density_kg_m3": 11200,
       "reference_area_m2": 3.243e-4,
       "drag_coefficient": 0.620,
+      "muzzle_velocity_ms": 928.0,
       "diameter_m": 0.01270
     }
   ]

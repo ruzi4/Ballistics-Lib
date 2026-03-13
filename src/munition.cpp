@@ -29,11 +29,12 @@ MunitionSpec parse_spec(const json& obj) {
         throw std::invalid_argument("Munition entry missing 'name' string field");
 
     MunitionSpec spec;
-    spec.name             = obj["name"].get<std::string>();
-    spec.mass_kg          = require_double(obj, "mass_kg");
-    spec.density_kg_m3    = require_double(obj, "density_kg_m3");
+    spec.name              = obj["name"].get<std::string>();
+    spec.mass_kg           = require_double(obj, "mass_kg");
+    spec.density_kg_m3     = require_double(obj, "density_kg_m3");
     spec.reference_area_m2 = require_double(obj, "reference_area_m2");
-    spec.drag_coefficient = require_double(obj, "drag_coefficient");
+    spec.drag_coefficient  = require_double(obj, "drag_coefficient");
+    spec.muzzle_velocity_ms = require_double(obj, "muzzle_velocity_ms");
 
     // Optional field
     if (obj.contains("diameter_m") && obj["diameter_m"].is_number())
@@ -48,6 +49,8 @@ MunitionSpec parse_spec(const json& obj) {
         throw std::invalid_argument("reference_area_m2 must be positive for: " + spec.name);
     if (spec.drag_coefficient < 0.0)
         throw std::invalid_argument("drag_coefficient must be non-negative for: " + spec.name);
+    if (spec.muzzle_velocity_ms <= 0.0)
+        throw std::invalid_argument("muzzle_velocity_ms must be positive for: " + spec.name);
 
     return spec;
 }
