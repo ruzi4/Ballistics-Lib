@@ -13,6 +13,7 @@
 //   Arrow keys        – move launcher North/South/East/West
 //   Page Up / Page Dn – raise / lower launcher altitude
 //   Right-mouse drag  – orbit camera
+//   Middle-mouse drag – pan camera (Free mode only)
 //   Scroll wheel      – zoom
 
 #include "raylib.h"
@@ -58,7 +59,9 @@ struct SolveResult {
     double elevation_deg = 0.0;
     double flight_time_s = 0.0;
     double range_m       = 0.0;
-    std::vector<Vector3> traj; // trajectory points in raylib coords
+    double max_range_m   = 0.0;  // max achievable range (for diagnostics)
+    double alt_diff_m    = 0.0;  // launcher altitude - target altitude
+    std::vector<Vector3> traj;   // trajectory points in raylib coords
 };
 
 struct SolveParams {
@@ -81,6 +84,8 @@ static SolveResult solve_async(const SolveParams& p)
     const double range_m = std::sqrt(dx * dx + dy * dy);
     out.range_m = range_m;
 
+    out.alt_diff_m = p.launcher_pos.z - p.target_pos.z;
+
     if (range_m < 1.0) return out; // launcher and target too close
 
     const double az_deg       = std::atan2(dx, dy) * kRadToDeg;
@@ -90,6 +95,12 @@ static SolveResult solve_async(const SolveParams& p)
     TrajectorySimulator sim(p.munition, p.atmo);
     LauncherOrientation orient;
     orient.azimuth_deg = az_deg;
+
+    // Build a quick table to find max range for diagnostics
+    FireControlTable diag_table;
+    diag_table.build(sim, p.muzzle_speed, az_deg, launch_height,
+                     false, 50, target_alt);
+    out.max_range_m = diag_table.max_range_m();
 
     FireSolution sol = solve_elevation(sim, orient, range_m,
                                        p.muzzle_speed,
@@ -258,6 +269,13 @@ int main()
     float cam_dist = 280.f;
     float cam_az   = 30.f;   // horizontal orbit angle (degrees)
     float cam_el   = 35.f;   // vertical elevation (degrees)
+    float pan_x    = 0.f;    // pan offset in raylib x (East)
+    float pan_z    = 0.f;    // pan offset in raylib z (South)
+
+    // View focus: 0 = Free (midpoint + pan), 1 = Launcher, 2 = Target
+    int  cam_focus_mode  = 0;
+    int  prev_focus_mode = 0;
+    bool vf_dd_edit      = false;
 
     Camera3D camera = {};
     camera.up         = { 0, 1, 0 };
@@ -291,7 +309,7 @@ int main()
         // -------------------------------------------------------------------
         // Keyboard controls (disabled while dropdown is open)
         // -------------------------------------------------------------------
-        if (!dd_edit) {
+        if (!dd_edit && !vf_dd_edit) {
             const float spd = 80.f * dt;   // m/s movement speed
             // Target movement
             if (IsKeyDown(KEY_W)) ty += spd;
@@ -361,14 +379,34 @@ int main()
                 cam_el -= d.y * 0.4f;
                 cam_el  = Clamp(cam_el, 3.f, 89.f);
             }
-            cam_dist -= GetMouseWheelMove() * 10.f;
+            // Pan (middle-mouse drag) — only in Free mode
+            if (cam_focus_mode == 0 && IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
+                Vector2 d = GetMouseDelta();
+                float scale = cam_dist * 0.002f; // pan speed scales with zoom
+                float az_r_cam = cam_az * DEG2RAD;
+                // Move in the camera's local horizontal plane
+                pan_x -= (d.x * cosf(az_r_cam) + d.y * sinf(az_r_cam) * sinf(cam_el * DEG2RAD)) * scale;
+                pan_z += (d.x * sinf(az_r_cam) - d.y * cosf(az_r_cam) * sinf(cam_el * DEG2RAD)) * scale;
+            }
+            cam_dist -= GetMouseWheelMove() * cam_dist * 0.08f;
             cam_dist  = Clamp(cam_dist, 5.f, 8000.f);
         }
 
-        // Orbit focus: midpoint between launcher and target
+        // Reset pan when switching to a snap mode
+        if (cam_focus_mode != prev_focus_mode) {
+            if (cam_focus_mode != 0) { pan_x = 0.f; pan_z = 0.f; }
+            prev_focus_mode = cam_focus_mode;
+        }
+
+        // Orbit focus based on view mode
         Vector3 rl_l   = to_rl({ lx, ly, lz });
         Vector3 rl_t   = to_rl({ tx, ty, tz });
-        Vector3 focus  = Vector3Scale(Vector3Add(rl_l, rl_t), 0.5f);
+        Vector3 focus;
+        if (cam_focus_mode == 1)      focus = rl_l;                                    // Launcher
+        else if (cam_focus_mode == 2) focus = rl_t;                                    // Target
+        else                          focus = Vector3Scale(Vector3Add(rl_l, rl_t), 0.5f); // Free
+        focus.x += pan_x;
+        focus.z += pan_z;
 
         const float el_r = cam_el * DEG2RAD;
         const float az_r = cam_az * DEG2RAD;
@@ -403,7 +441,7 @@ int main()
         BeginScissorMode(PANEL_W, 0, W - PANEL_W, H);
         BeginMode3D(camera);
 
-        DrawGrid(300, 10.0f);   // 3 km × 3 km, 10 m cells
+        DrawGrid(800, 10.0f);   // 8 km × 8 km, 10 m cells
 
         // Axis arrows at world origin
         DrawLine3D({ 0, 0.1f,  0  }, { 25, 0.1f,   0  }, RED);    // +x = East
@@ -450,9 +488,7 @@ int main()
 
         // ---- Munition -------------------------------------------------------
         DrawText("MUNITION", mx, y, 12, sec_col); y += 16;
-        if (GuiDropdownBox({ (float)mx, (float)y, (float)cw, (float)rh },
-                            dd_str.c_str(), &mun_idx, dd_edit))
-            dd_edit = !dd_edit;
+        const int mun_dd_y = y; // save Y for deferred dropdown draw
         y += rh + 6;
 
         // Muzzle speed slider
@@ -516,20 +552,40 @@ int main()
         } else if (computing) {
             DrawText("  Computing...", mx, y, 14, YELLOW); y += 20;
         } else {
-            DrawText("  No solution (target out of range)", mx, y, 14, { 220, 80, 80, 255 }); y += 20;
+            const Color err_col = { 220, 80, 80, 255 };
+            DrawText("  No solution", mx, y, 14, err_col); y += 18;
+            DrawText(TextFormat("  Range: %.0f m  Max: %.0f m",
+                     current.range_m, current.max_range_m), mx, y, 12, err_col); y += 16;
+            DrawText(TextFormat("  Alt diff: %+.1f m (launcher - target)",
+                     current.alt_diff_m), mx, y, 12, err_col); y += 16;
         }
 
+        // ---- View Focus -----------------------------------------------------
+        DrawText("VIEW FOCUS", mx, y, 12, sec_col); y += 16;
+        const int vf_dd_y = y; // save Y for deferred dropdown draw
+        y += rh + 14;
+
         // ---- Keyboard help (anchored to bottom of panel) --------------------
-        int hy = H - 178;
-        DrawRectangle(mx - 4, hy - 8, cw + 8, 180, { 28, 30, 40, 200 });
-        DrawText("KEYBOARD", mx, hy, 12, sec_col); hy += 18;
+        int hy = H - 194;
+        DrawRectangle(mx - 4, hy - 8, cw + 8, 198, { 28, 30, 40, 200 });
+        DrawText("CONTROLS", mx, hy, 12, sec_col); hy += 18;
         const Color hc = { 175, 178, 200, 255 };
         DrawText("W / S / A / D      target  N / S / E / W", mx, hy, 12, hc); hy += 16;
         DrawText("Q / E              target  altitude",       mx, hy, 12, hc); hy += 16;
         DrawText("Arrow keys         launcher N / S / E / W", mx, hy, 12, hc); hy += 16;
         DrawText("Page Up / Down     launcher altitude",       mx, hy, 12, hc); hy += 16;
         DrawText("Right-mouse drag   orbit camera",            mx, hy, 12, hc); hy += 16;
+        DrawText("Middle-mouse drag  pan camera",              mx, hy, 12, hc); hy += 16;
         DrawText("Scroll wheel       zoom",                    mx, hy, 12, hc);
+
+        // ---- Deferred dropdown draws (on top of all other controls) ---------
+        if (GuiDropdownBox({ (float)mx, (float)vf_dd_y, (float)cw, (float)rh },
+                            "Free;Launcher;Target", &cam_focus_mode, vf_dd_edit))
+            vf_dd_edit = !vf_dd_edit;
+
+        if (GuiDropdownBox({ (float)mx, (float)mun_dd_y, (float)cw, (float)rh },
+                            dd_str.c_str(), &mun_idx, dd_edit))
+            dd_edit = !dd_edit;
 
         EndDrawing();
     }
