@@ -53,9 +53,8 @@ int main(int argc, char* argv[]) {
     std::printf("  BC     : %.2f kg/m²\n", spec.ballistic_coefficient());
     std::printf("\n");
 
-    // Standard sea-level atmosphere with a 5 m/s headwind
+    // Standard sea-level atmosphere
     AtmosphericConditions atm;
-    atm.wind.velocity_ms = Vec3{-5.0, 0.0, 0.0}; // 5 m/s headwind on x-axis
 
     TrajectorySimulator sim(spec, atm);
 

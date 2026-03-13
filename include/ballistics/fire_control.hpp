@@ -124,8 +124,6 @@ public:
     ///                          and atmospheric conditions.
     /// @param muzzle_speed_ms   Muzzle velocity (m/s).
     /// @param azimuth_deg       Horizontal bearing used during the sweep (degrees).
-    ///                          Irrelevant in still air; set to the expected
-    ///                          firing direction when wind is present.
     /// @param launch_height_m   Launcher height above the target plane (m).
     /// @param high_angle        false = direct-fire table (elevation < theta_max)
     ///                          true  = plunging-fire table (elevation > theta_max)

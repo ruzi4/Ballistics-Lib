@@ -7,7 +7,7 @@ interactive applications.
 ## Features
 
 - **Trajectory simulation** — RK4 (default) or symplectic-Euler integration with
-  drag, gravity, and wind. A single step costs ~200 ns; thousands of concurrent
+  drag and gravity. A single step costs ~200 ns; thousands of concurrent
   projectiles are feasible at 60 Hz.
 - **Fire-control solver** — `solve_elevation` finds the required launch angle for a
   given range using ternary-search + bisection over full trajectory simulations.
@@ -86,7 +86,7 @@ MunitionLibrary lib;
 lib.load("data/munitions.json");
 const MunitionSpec& m855 = lib.get("5.56x45_m855_62gr");
 
-// Set up simulator (sea-level density, no wind)
+// Set up simulator (sea-level density)
 AtmosphericConditions atmo;
 TrajectorySimulator sim(m855, atmo);
 

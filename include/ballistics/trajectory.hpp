@@ -61,11 +61,10 @@ using StepCallback = std::function<bool(const ProjectileState&)>;
 /// Forces acting on the projectile:
 ///   1. Gravity:     F_g = m * g  (downward, -z)
 ///   2. Aerodynamic drag:
-///        F_d = -½ · Cd · ρ · A · |v_rel|² · v̂_rel
-///      where v_rel = v_projectile − v_wind
+///        F_d = -½ · Cd · ρ · A · |v|² · v̂
 ///
 /// Equation of motion:
-///   a = g_vec − (k · |v_rel|) · v_rel
+///   a = g_vec − (k · |v|) · v
 ///   k = ½ · Cd · ρ · A / m        (precomputed drag constant, 1/m)
 ///
 /// Integration is performed with 4th-order Runge-Kutta (RK4) for accuracy,

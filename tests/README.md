@@ -34,18 +34,15 @@ modules. Uses a minimal hand-rolled test framework with no external dependencies
 **Trajectory simulation**
 - Vacuum (zero-drag) parabolic motion — compared to analytical solution
 - Drag reduces range vs. vacuum
-- Tailwind increases range
 - Real-time `step()` performance (< 100 µs per step)
 - Streaming callback interface
-- Altitude-varying atmosphere callback
 - Ground intersection with sub-step linear interpolation
 
 **Fire control**
 - Low-angle and high-angle `solve_elevation` solutions
 - Out-of-range detection
 - Elevated launcher
-- Azimuth independence in still air
-- Wind effect on required azimuth
+- Azimuth independence
 - `FireControlTable`: build, ready state, lookup accuracy vs. `solve_elevation`
   (< 0.2° error with 500 samples), out-of-range handling, real-time performance
   (< 1 µs per lookup), high-angle table, below-minimum-range handling

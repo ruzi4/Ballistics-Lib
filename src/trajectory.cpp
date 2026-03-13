@@ -47,7 +47,7 @@ void TrajectorySimulator::set_atmosphere(const AtmosphericConditions& atm) noexc
 // Compute derivatives at a given state.
 // dpos/dt = vel
 // dvel/dt = gravity + drag_acceleration
-//   drag_accel = -k · |v_rel| · v_rel   where v_rel = vel − wind
+//   drag_accel = -k · |v| · v
 void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
                                       const Vec3& vel,
                                       Vec3&       dpos_dt,
@@ -55,10 +55,8 @@ void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
 {
     dpos_dt = vel;
 
-    // Velocity relative to the wind
-    const Vec3   v_rel    = vel - atmosphere_.wind.velocity_ms;
-    const double v_rel_mag = std::sqrt(v_rel.norm_sq());
-    const Vec3   drag_acc  = -(drag_k_ * v_rel_mag) * v_rel;
+    const double v_mag    = std::sqrt(vel.norm_sq());
+    const Vec3   drag_acc = -(drag_k_ * v_mag) * vel;
 
     dvel_dt = Vec3{0.0, 0.0, kGravity} + drag_acc;
 }

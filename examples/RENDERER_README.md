@@ -162,8 +162,7 @@ Switching from Free to Launcher or Target resets the pan offset.
 - The solver calls `solve_elevation` from the ballistics library, which uses
   a ternary-search + bisection algorithm and runs 120–180 full trajectory
   simulations per call.
-- Drag, gravity, and ISA sea-level atmosphere are all applied; wind is zero
-  by default.
+- Drag and gravity are applied with a constant sea-level air density.
 - The trajectory arc is collected at 60 Hz integration (RK4) and converted to
   the scene's coordinate space for rendering.
 - Elevated targets (target altitude > launcher altitude) are fully supported.

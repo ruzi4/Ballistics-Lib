@@ -16,7 +16,7 @@ the corresponding headers under `include/ballistics/`.
 ## Physics summary
 
 - **Gravity**: −9.80665 m/s² in the z-up direction
-- **Drag**: `F_d = −½ · Cd · ρ · A · |v_rel|² · v̂_rel`, where `v_rel = v − wind`
+- **Drag**: `F_d = −½ · Cd · ρ · A · |v|² · v̂`
 - **Integration**: 4th-order Runge-Kutta by default; symplectic Euler available
 - **Coordinate convention**: x = East, y = North, z = Up (right-handed, z-up)
 - **Air density**: computed once per `TrajectorySimulator` construction and cached

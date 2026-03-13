@@ -65,9 +65,9 @@ static MunitionSpec drag_munition() {
     return m;
 }
 
-/// Standard sea-level atmosphere, no wind.
+/// Standard sea-level atmosphere.
 static AtmosphericConditions still_atm() {
-    return AtmosphericConditions{};  // default: 1.225 kg/m³, no wind
+    return AtmosphericConditions{};  // default: 1.225 kg/m³
 }
 
 // ---------------------------------------------------------------------------
@@ -113,11 +113,6 @@ static void test_atmosphere() {
     // Default construction yields ISA sea-level density
     AtmosphericConditions atm;
     CHECK_NEAR(atm.air_density_kg_m3, 1.225, 0.001);
-
-    // Wind defaults to zero
-    CHECK_NEAR(atm.wind.velocity_ms.x, 0.0, 1e-15);
-    CHECK_NEAR(atm.wind.velocity_ms.y, 0.0, 1e-15);
-    CHECK_NEAR(atm.wind.velocity_ms.z, 0.0, 1e-15);
 
     // Custom density is preserved
     AtmosphericConditions thin;
@@ -276,41 +271,6 @@ static void test_drag_reduces_range() {
 }
 
 // ---------------------------------------------------------------------------
-// Wind effect test
-// ---------------------------------------------------------------------------
-static void test_wind() {
-    SECTION("Wind shifts impact point");
-
-    // Tailwind (positive x) should increase range
-    AtmosphericConditions still   = still_atm();
-    AtmosphericConditions tailwind = still;
-    tailwind.wind.velocity_ms = Vec3{50.0, 0.0, 0.0};  // 50 m/s tailwind
-
-    const double angle_rad = 30.0 * (kDegToRad);
-    ProjectileState initial;
-    initial.position = Vec3{0.0, 0.0, 1.0};
-    initial.velocity = Vec3{400.0 * std::cos(angle_rad), 0.0,
-                            400.0 * std::sin(angle_rad)};
-    initial.time     = 0.0;
-
-    SimulationConfig cfg;
-    cfg.dt       = 1.0 / 500.0;
-    cfg.max_time = 60.0;
-
-    TrajectorySimulator s_sim(drag_munition(), still);
-    TrajectorySimulator t_sim(drag_munition(), tailwind);
-
-    auto s_states = s_sim.simulate(initial, cfg);
-    auto t_states = t_sim.simulate(initial, cfg);
-
-    const double x_still   = s_states.back().position.x;
-    const double x_tailwind = t_states.back().position.x;
-
-    std::printf("  Still range: %.1f m,  Tailwind range: %.1f m\n",
-                x_still, x_tailwind);
-    CHECK(x_tailwind > x_still);
-}
-
 // ---------------------------------------------------------------------------
 // Real-time step performance
 // ---------------------------------------------------------------------------
@@ -508,7 +468,7 @@ static void test_fire_control_elevated_launcher() {
 static void test_fire_control_azimuth_independence() {
     SECTION("solve_elevation: elevation angle is azimuth-independent");
 
-    AtmosphericConditions atm = still_atm();  // still air, no wind
+    AtmosphericConditions atm = still_atm();
     TrajectorySimulator sim(drag_munition(), atm);
 
     const double muzzle_speed = 500.0;
@@ -523,7 +483,7 @@ static void test_fire_control_azimuth_independence() {
     std::printf("  N: %.4f°  E: %.4f°  S: %.4f°\n",
                 north.elevation_deg, east.elevation_deg, south.elevation_deg);
 
-    // Without wind, elevation should be identical regardless of azimuth
+    // Elevation should be identical regardless of azimuth
     CHECK_NEAR(north.elevation_deg, east.elevation_deg,  0.01);
     CHECK_NEAR(north.elevation_deg, south.elevation_deg, 0.01);
 }
@@ -716,36 +676,6 @@ static void test_table_lookup_below_min_range() {
     CHECK(exact.valid);
 }
 
-static void test_fire_control_wind() {
-    SECTION("solve_elevation: azimuth matters when wind is present");
-
-    // With a crosswind, firing East vs West should require different elevations
-    // to reach the same range because the headwind/tailwind component differs.
-    AtmosphericConditions atm_wind = still_atm();
-    atm_wind.wind.velocity_ms = Vec3{20.0, 0.0, 0.0};  // 20 m/s eastward wind
-
-    TrajectorySimulator sim(drag_munition(), atm_wind);
-
-    const double muzzle_speed = 500.0;
-    const double range        = 400.0;
-
-    // Firing East (+x): tailwind → effectively less drag → lower elevation needed
-    FireSolution east = solve_elevation(sim, LauncherOrientation{90.0},
-                                        range, muzzle_speed);
-    // Firing West (-x): headwind → more drag → higher elevation needed
-    FireSolution west = solve_elevation(sim, LauncherOrientation{270.0},
-                                        range, muzzle_speed);
-
-    CHECK(east.valid);
-    CHECK(west.valid);
-
-    std::printf("  Wind 20 m/s East — firing East: elev=%.3f°  West: elev=%.3f°\n",
-                east.elevation_deg, west.elevation_deg);
-
-    // Eastward (tailwind) shot needs less elevation than westward (headwind) shot
-    CHECK(east.elevation_deg < west.elevation_deg);
-}
-
 
 static void test_munition_library_load_file() {
     SECTION("MunitionLibrary: load() from file path");
@@ -816,46 +746,6 @@ static void test_table_with_target_altitude() {
     CHECK(table_elev.lookup(test_range).valid);
 }
 
-static void test_table_wind_azimuth() {
-    SECTION("FireControlTable: azimuth affects lookup when wind is present");
-
-    // Build two tables for the same munition but different azimuths in
-    // the presence of a strong headwind.  The firing solution should differ
-    // because one direction has a tailwind and the other a headwind.
-    AtmosphericConditions atm_wind = still_atm();
-    atm_wind.wind.velocity_ms = Vec3{30.0, 0.0, 0.0};  // 30 m/s eastward
-
-    TrajectorySimulator sim(drag_munition(), atm_wind);
-
-    const double muzzle = 500.0;
-
-    FireControlTable east_table;   // fire East  (+x): tailwind
-    FireControlTable west_table;   // fire West  (-x): headwind
-
-    east_table.build(sim, muzzle, /*azimuth_deg=*/ 90.0, 0.0, false, 200);
-    west_table.build(sim, muzzle, /*azimuth_deg=*/270.0, 0.0, false, 200);
-
-    CHECK(east_table.ready());
-    CHECK(west_table.ready());
-
-    std::printf("  Tailwind (East) max_range=%.1f m  Headwind (West) max_range=%.1f m\n",
-                east_table.max_range_m(), west_table.max_range_m());
-
-    // Tailwind increases effective range; headwind decreases it.
-    CHECK(east_table.max_range_m() > west_table.max_range_m());
-
-    // At a range both tables cover, the elevation angles must differ.
-    const double common_range = std::min(east_table.max_range_m(),
-                                         west_table.max_range_m()) * 0.5;
-    FireSolution e_sol = east_table.lookup(common_range);
-    FireSolution w_sol = west_table.lookup(common_range);
-    CHECK(e_sol.valid);
-    CHECK(w_sol.valid);
-    std::printf("  At %.0f m — East elev=%.3f°  West elev=%.3f°\n",
-                common_range, e_sol.elevation_deg, w_sol.elevation_deg);
-    // Headwind (West) requires a higher elevation to reach the same range.
-    CHECK(w_sol.elevation_deg > e_sol.elevation_deg);
-}
 
 static void test_build_num_samples_guard() {
     SECTION("FireControlTable: num_samples < 2 is clamped to 2");
@@ -1391,10 +1281,10 @@ int main() {
     test_munition_library();
     test_vacuum_trajectory();
     test_drag_reduces_range();
-    test_wind();
     test_realtime_performance();
     test_streaming_callback();
     test_fire_control_basic();
+
     test_fire_control_high_angle();
     test_fire_control_out_of_range();
     test_fire_control_elevated_launcher();
@@ -1406,10 +1296,8 @@ int main() {
     test_table_build_timing();
     test_table_high_angle();
     test_table_lookup_below_min_range();
-    test_fire_control_wind();
     test_munition_library_load_file();
     test_table_with_target_altitude();
-    test_table_wind_azimuth();
     test_build_num_samples_guard();
     test_invalid_muzzle_speed();
 
