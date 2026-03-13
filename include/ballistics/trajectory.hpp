@@ -160,15 +160,15 @@ private:
                      Vec3&       dpos_dt,
                      Vec3&       dvel_dt) const noexcept;
 
-    /// RK4 step with an explicit air density, bypassing the stored atmosphere.
+    /// RK4 step with a caller-supplied air density.
     /// Wind is still taken from the stored atmosphere.
-    /// Used by simulate() to avoid constructing a temporary TrajectorySimulator
-    /// when altitude-varying density is requested.
+    /// Allows simulate() to use an altitude-varying density without
+    /// mutating the simulator or copying it.
     [[nodiscard]] ProjectileState step_rk4_rho(const ProjectileState& state,
                                                 double dt,
                                                 double rho) const noexcept;
 
-    /// Symplectic Euler step with an explicit air density.
+    /// Symplectic Euler step with a caller-supplied air density.
     [[nodiscard]] ProjectileState step_euler_rho(const ProjectileState& state,
                                                   double dt,
                                                   double rho) const noexcept;
