@@ -1,0 +1,88 @@
+---
+# Ballistics-Lib clang-tidy configuration
+# Run: clang-tidy <file> -- -std=c++17 -Iinclude
+#
+# Philosophy: catch real bugs and enforce modern C++17 idioms while
+# suppressing checks that are too noisy for a performance-sensitive
+# physics library (magic numbers, trailing-return-type mandates, etc.).
+
+Checks: >
+  clang-diagnostic-*,
+  clang-analyzer-*,
+  bugprone-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers,
+  -readability-identifier-length,
+  -readability-named-parameter
+
+# Treat these as errors (zero-tolerance bugs)
+WarningsAsErrors: >
+  bugprone-use-after-move,
+  bugprone-dangling-handle,
+  bugprone-infinite-loop,
+  clang-analyzer-core.uninitialized.*,
+  clang-analyzer-cplusplus.NewDelete,
+  performance-move-const-arg
+
+# Only apply header checks to our own headers, not vendored/system headers
+HeaderFilterRegex: 'include/ballistics/.*'
+
+CheckOptions:
+  # -----------------------------------------------------------------------
+  # Naming conventions (Google-style with k-prefix for constants)
+  # -----------------------------------------------------------------------
+  - key:   readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key:   readability-identifier-naming.StructCase
+    value: CamelCase
+  - key:   readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key:   readability-identifier-naming.MethodCase
+    value: lower_case
+  - key:   readability-identifier-naming.VariableCase
+    value: lower_case
+  - key:   readability-identifier-naming.ParameterCase
+    value: lower_case
+  - key:   readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key:   readability-identifier-naming.MemberCase
+    value: lower_case
+  - key:   readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key:   readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key:   readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key:   readability-identifier-naming.EnumConstantPrefix
+    value: k
+
+  # -----------------------------------------------------------------------
+  # Performance
+  # -----------------------------------------------------------------------
+  # Warn when a const reference parameter could be passed by value more cheaply
+  - key:   performance-unnecessary-value-param.AllowedTypes
+    value: ''
+
+  # -----------------------------------------------------------------------
+  # Modernize
+  # -----------------------------------------------------------------------
+  - key:   modernize-use-default-member-init.UseAssignment
+    value: '1'
+  - key:   modernize-loop-convert.MinConfidence
+    value: reasonable
+
+  # -----------------------------------------------------------------------
+  # Bugprone
+  # -----------------------------------------------------------------------
+  - key:   bugprone-argument-comment.CommentBoolLiterals
+    value: '1'
+  - key:   bugprone-argument-comment.CommentNullPtrs
+    value: '1'
