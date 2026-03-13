@@ -72,6 +72,10 @@ target_include_directories (${PROJECT_NAME}
 # Aggressive optimisation flags for real-time performance
 target_compile_options(ballistics PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -march=native -ffast-math>
+    # -ffast-math implies -ffinite-math-only; Clang then warns when
+    # nlohmann_json's headers use std::isfinite / infinity() (third-party code
+    # we cannot modify).  The warning is not actionable, so silence it.
+    $<$<CXX_COMPILER_ID:Clang>:-Wno-nan-infinity-disabled>
     $<$<CXX_COMPILER_ID:MSVC>:/O2 /fp:fast>
 )
 
