@@ -50,26 +50,15 @@ void TrajectorySimulator::set_atmosphere(const AtmosphericConditions& atm) noexc
 //   drag_accel = -k · |v_rel| · v_rel   where v_rel = vel − wind
 void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
                                       const Vec3& vel,
-                                      double      rho,
                                       Vec3&       dpos_dt,
                                       Vec3&       dvel_dt) const noexcept
 {
     dpos_dt = vel;
 
     // Velocity relative to the wind
-    const Vec3   v_rel     = vel - atmosphere_.wind.velocity_ms;
-    const double v_rel_sq  = v_rel.norm_sq();
-
-    // Drag: a_drag = -k_rho · |v_rel| · v_rel
-    // Scale the precomputed drag_k_ (which uses the fixed atmosphere density)
-    // by the ratio rho / rho_fixed.  This avoids re-reading three munition
-    // fields and saves 2 multiplications per derivatives() call (= 8 per RK4
-    // step).  Falls back to zero when rho_fixed == 0 (vacuum atmosphere).
-    const double rho_fixed = atmosphere_.air_density_kg_m3;
-    const double k_rho = (rho_fixed > 0.0) ? drag_k_ * (rho / rho_fixed) : 0.0;
-
-    const double v_rel_mag = std::sqrt(v_rel_sq);
-    const Vec3   drag_acc  = -(k_rho * v_rel_mag) * v_rel;
+    const Vec3   v_rel    = vel - atmosphere_.wind.velocity_ms;
+    const double v_rel_mag = std::sqrt(v_rel.norm_sq());
+    const Vec3   drag_acc  = -(drag_k_ * v_rel_mag) * v_rel;
 
     dvel_dt = Vec3{0.0, 0.0, kGravity} + drag_acc;
 }
@@ -78,35 +67,34 @@ void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
 // Single-step integrators
 // ---------------------------------------------------------------------------
 
-ProjectileState TrajectorySimulator::step_rk4_rho(const ProjectileState& s,
-                                                   double dt,
-                                                   double rho) const noexcept
+ProjectileState TrajectorySimulator::step_rk4(const ProjectileState& s,
+                                               double dt) const noexcept
 {
     Vec3 dp, dv;
 
     // k1
-    derivatives(s.position, s.velocity, rho, dp, dv);
+    derivatives(s.position, s.velocity, dp, dv);
     const Vec3 k1_p = dp;
     const Vec3 k1_v = dv;
 
     // k2
     derivatives(s.position + 0.5 * dt * k1_p,
                 s.velocity  + 0.5 * dt * k1_v,
-                rho, dp, dv);
+                dp, dv);
     const Vec3 k2_p = dp;
     const Vec3 k2_v = dv;
 
     // k3
     derivatives(s.position + 0.5 * dt * k2_p,
                 s.velocity  + 0.5 * dt * k2_v,
-                rho, dp, dv);
+                dp, dv);
     const Vec3 k3_p = dp;
     const Vec3 k3_v = dv;
 
     // k4
     derivatives(s.position + dt * k3_p,
                 s.velocity  + dt * k3_v,
-                rho, dp, dv);
+                dp, dv);
     const Vec3 k4_p = dp;
     const Vec3 k4_v = dv;
 
@@ -118,12 +106,11 @@ ProjectileState TrajectorySimulator::step_rk4_rho(const ProjectileState& s,
     return next;
 }
 
-ProjectileState TrajectorySimulator::step_euler_rho(const ProjectileState& s,
-                                                     double dt,
-                                                     double rho) const noexcept
+ProjectileState TrajectorySimulator::step_euler(const ProjectileState& s,
+                                                 double dt) const noexcept
 {
     Vec3 dp, dv;
-    derivatives(s.position, s.velocity, rho, dp, dv);
+    derivatives(s.position, s.velocity, dp, dv);
 
     ProjectileState next;
     // Symplectic Euler: update velocity first, then position with new velocity
@@ -131,18 +118,6 @@ ProjectileState TrajectorySimulator::step_euler_rho(const ProjectileState& s,
     next.position = s.position + dt * next.velocity;
     next.time     = s.time + dt;
     return next;
-}
-
-ProjectileState TrajectorySimulator::step_rk4(const ProjectileState& s,
-                                               double dt) const noexcept
-{
-    return step_rk4_rho(s, dt, atmosphere_.air_density_kg_m3);
-}
-
-ProjectileState TrajectorySimulator::step_euler(const ProjectileState& s,
-                                                 double dt) const noexcept
-{
-    return step_euler_rho(s, dt, atmosphere_.air_density_kg_m3);
 }
 
 ProjectileState TrajectorySimulator::step(const ProjectileState& state,
@@ -155,8 +130,6 @@ ProjectileState TrajectorySimulator::step(const ProjectileState& state,
 // Batch simulation helpers
 // ---------------------------------------------------------------------------
 
-// Internal core used by both batch overloads.
-// Calls step_fn(state, dt) → ProjectileState and notifies callback.
 void TrajectorySimulator::simulate(const ProjectileState& initial,
                                    const SimulationConfig& cfg,
                                    StepCallback callback) const
@@ -185,17 +158,11 @@ void TrajectorySimulator::simulate(const ProjectileState& initial,
             dt = cfg.max_time - state.time;
         if (dt <= 0.0) break;
 
-        // Resolve air density for this step (altitude-varying if requested).
-        // Wind is always taken from the simulator's stored atmosphere.
-        const double rho = cfg.atmosphere_fn
-            ? cfg.atmosphere_fn(state.position.z).air_density_kg_m3
-            : atmosphere_.air_density_kg_m3;
-
         ProjectileState next;
         if (cfg.use_rk4) {
-            next = step_rk4_rho(state, dt, rho);
+            next = step_rk4(state, dt);
         } else {
-            next = step_euler_rho(state, dt, rho);
+            next = step_euler(state, dt);
         }
 
         // Ground intersection: linearly interpolate to the exact crossing time

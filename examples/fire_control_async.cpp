@@ -148,7 +148,7 @@ int main(int argc, char* argv[]) {
 
     const MunitionSpec& spec        = lib.get("5.56x45_m855_62gr");
     const double        muzzle_speed = spec.muzzle_velocity_ms;
-    AtmosphericConditions atm        = isa_conditions(0.0);
+    AtmosphericConditions atm;
 
     TrajectorySimulator sim(spec, atm);
 

@@ -42,11 +42,8 @@ struct SimulationConfig {
     /// RK4 is strongly recommended; Euler is provided for benchmarking only.
     bool use_rk4{true};
 
-    /// Optional altitude-varying atmosphere callback.
-    /// If set, called with the current altitude (m) before each step to
-    /// obtain fresh AtmosphericConditions. If null, the atmosphere passed to
-    /// the simulator constructor is used for the entire trajectory.
-    std::function<AtmosphericConditions(double altitude_m)> atmosphere_fn;
+    // Atmosphere is constant for the entire trajectory.
+    // Set AtmosphericConditions on the TrajectorySimulator directly.
 };
 
 /// Per-step callback used by the streaming simulate() overload.
@@ -151,27 +148,10 @@ private:
     void update_drag_k() noexcept;
 
     /// Compute [dpos/dt, dvel/dt] at the given kinematic state.
-    /// @param pos   Current position (used for future altitude-varying density)
-    /// @param vel   Current velocity (m/s)
-    /// @param rho   Air density at this instant (kg/m³)
     void derivatives(const Vec3& pos,
                      const Vec3& vel,
-                     double      rho,
                      Vec3&       dpos_dt,
                      Vec3&       dvel_dt) const noexcept;
-
-    /// RK4 step with a caller-supplied air density.
-    /// Wind is still taken from the stored atmosphere.
-    /// Allows simulate() to use an altitude-varying density without
-    /// mutating the simulator or copying it.
-    [[nodiscard]] ProjectileState step_rk4_rho(const ProjectileState& state,
-                                                double dt,
-                                                double rho) const noexcept;
-
-    /// Symplectic Euler step with a caller-supplied air density.
-    [[nodiscard]] ProjectileState step_euler_rho(const ProjectileState& state,
-                                                  double dt,
-                                                  double rho) const noexcept;
 };
 
 } // namespace ballistics

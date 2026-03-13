@@ -272,7 +272,7 @@ int main()
     camera.fovy       = 45.f;
     camera.projection = CAMERA_PERSPECTIVE;
 
-    AtmosphericConditions atmo = isa_conditions(0.0);
+    AtmosphericConditions atmo;
 
     const int PANEL_W = 340;
 

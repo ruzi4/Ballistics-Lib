@@ -86,8 +86,8 @@ MunitionLibrary lib;
 lib.load("data/munitions.json");
 const MunitionSpec& m855 = lib.get("5.56x45_m855_62gr");
 
-// Set up simulator (sea-level ISA, no wind)
-AtmosphericConditions atmo = isa_conditions(0.0);
+// Set up simulator (sea-level density, no wind)
+AtmosphericConditions atmo;
 TrajectorySimulator sim(m855, atmo);
 
 // Solve for a 600 m shot due North

@@ -65,9 +65,9 @@ static MunitionSpec drag_munition() {
     return m;
 }
 
-/// Still sea-level atmosphere, no wind.
+/// Standard sea-level atmosphere, no wind.
 static AtmosphericConditions still_atm() {
-    return isa_conditions(0.0);
+    return AtmosphericConditions{};  // default: 1.225 kg/m³, no wind
 }
 
 // ---------------------------------------------------------------------------
@@ -108,30 +108,21 @@ static void test_vec3() {
 // Atmosphere tests
 // ---------------------------------------------------------------------------
 static void test_atmosphere() {
-    SECTION("Atmosphere ISA");
+    SECTION("Atmosphere constant model");
 
-    // Sea level
-    auto sl = isa_conditions(0.0);
-    CHECK_NEAR(sl.temperature_K,    288.15,  0.01);
-    CHECK_NEAR(sl.pressure_Pa,      101325.0, 1.0);
-    CHECK_NEAR(sl.air_density_kg_m3, 1.225,   0.01);
+    // Default construction yields ISA sea-level density
+    AtmosphericConditions atm;
+    CHECK_NEAR(atm.air_density_kg_m3, 1.225, 0.001);
 
-    // Density decreases with altitude
-    auto hi = isa_conditions(5000.0);
-    CHECK(hi.air_density_kg_m3 < sl.air_density_kg_m3);
-    CHECK(hi.temperature_K     < sl.temperature_K);
+    // Wind defaults to zero
+    CHECK_NEAR(atm.wind.velocity_ms.x, 0.0, 1e-15);
+    CHECK_NEAR(atm.wind.velocity_ms.y, 0.0, 1e-15);
+    CHECK_NEAR(atm.wind.velocity_ms.z, 0.0, 1e-15);
 
-    // Tropopause: temperature should be ~216.65 K
-    auto tp = isa_conditions(11000.0);
-    CHECK_NEAR(tp.temperature_K, 216.65, 0.5);
-
-    // compute_air_density: dry air at ISA sea level
-    double rho = compute_air_density(288.15, 101325.0, 0.0);
-    CHECK_NEAR(rho, 1.225, 0.01);
-
-    // Humidity increases effective volume, so density decreases slightly
-    double rho_wet = compute_air_density(288.15, 101325.0, 1.0);
-    CHECK(rho_wet < rho);
+    // Custom density is preserved
+    AtmosphericConditions thin;
+    thin.air_density_kg_m3 = 0.9;
+    CHECK_NEAR(thin.air_density_kg_m3, 0.9, 1e-15);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,47 +385,6 @@ static void test_streaming_callback() {
         return ++counted < stop_at;
     });
     CHECK(counted == stop_at);
-}
-
-// ---------------------------------------------------------------------------
-// Altitude-varying atmosphere
-// ---------------------------------------------------------------------------
-static void test_altitude_varying_atmosphere() {
-    SECTION("Altitude-varying atmosphere callback");
-
-    MunitionSpec m = drag_munition();
-    AtmosphericConditions base_atm = still_atm();
-    TrajectorySimulator sim(m, base_atm);
-
-    ProjectileState initial;
-    initial.position = Vec3{0.0, 0.0, 0.0};
-    initial.velocity = Vec3{700.0, 0.0, 700.0};  // steep trajectory
-    initial.time     = 0.0;
-
-    // Fixed atmosphere
-    SimulationConfig cfg_fixed;
-    cfg_fixed.dt       = 1.0 / 240.0;
-    cfg_fixed.max_time = 120.0;
-
-    // Altitude-varying: standard ISA
-    SimulationConfig cfg_isa = cfg_fixed;
-    cfg_isa.atmosphere_fn = [](double alt_m) {
-        return isa_conditions(alt_m);
-    };
-
-    auto fixed_states = sim.simulate(initial, cfg_fixed);
-    auto isa_states   = sim.simulate(initial, cfg_isa);
-
-    // Both should produce valid trajectories
-    CHECK(!fixed_states.empty());
-    CHECK(!isa_states.empty());
-
-    // At high altitude, density is lower → less drag → ISA should fly farther
-    const double x_fixed = fixed_states.back().position.x;
-    const double x_isa   = isa_states.back().position.x;
-    std::printf("  Fixed-density range: %.1f m,  ISA range: %.1f m\n",
-                x_fixed, x_isa);
-    CHECK(x_isa > x_fixed);
 }
 
 // ---------------------------------------------------------------------------
@@ -796,27 +746,6 @@ static void test_fire_control_wind() {
     CHECK(east.elevation_deg < west.elevation_deg);
 }
 
-static void test_isa_above_stratopause() {
-    SECTION("isa_conditions: above 20 km (clamped stratopause fallback)");
-
-    // The ISA model covers 0–20 km explicitly.  Above that, the implementation
-    // should use a clamped fallback rather than crashing or producing garbage.
-    auto lo  = isa_conditions(20000.0);   // top of modelled stratosphere
-    auto hi  = isa_conditions(25000.0);   // above model range
-    auto vhi = isa_conditions(50000.0);   // well above model range
-
-    // Must not produce NaN or obviously wrong values
-    CHECK(lo.air_density_kg_m3  > 0.0);
-    CHECK(hi.air_density_kg_m3  > 0.0);
-    CHECK(vhi.air_density_kg_m3 > 0.0);
-
-    // Density should be lower at higher altitudes (or equal if clamped)
-    CHECK(hi.air_density_kg_m3 <= lo.air_density_kg_m3);
-
-    std::printf("  ISA density: 20km=%.4f  25km=%.4f  50km=%.4f kg/m³\n",
-                lo.air_density_kg_m3, hi.air_density_kg_m3,
-                vhi.air_density_kg_m3);
-}
 
 static void test_munition_library_load_file() {
     SECTION("MunitionLibrary: load() from file path");
@@ -1070,7 +999,7 @@ static void test_altitude_launcher_above_target() {
 
     for (const auto& s : scenarios) {
         const double launch_height = s.launcher_alt - s.target_alt;
-        AtmosphericConditions atm = isa_conditions(s.target_alt);
+        AtmosphericConditions atm;
         const MunitionSpec& spec = lib.get(s.munition);
         TrajectorySimulator sim(spec, atm);
 
@@ -1147,7 +1076,7 @@ static void test_altitude_launcher_below_target() {
 
     for (const auto& s : impossible) {
         const double lh = s.launcher_alt - s.target_alt;
-        AtmosphericConditions atm = isa_conditions(s.launcher_alt);
+        AtmosphericConditions atm;
         TrajectorySimulator sim(lib.get(s.munition), atm);
 
         FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
@@ -1187,7 +1116,7 @@ static void test_altitude_launcher_below_target() {
 
     for (const auto& s : achievable) {
         const double lh = s.launcher_alt - s.target_alt;  // negative
-        AtmosphericConditions atm = isa_conditions(s.launcher_alt);
+        AtmosphericConditions atm;
         TrajectorySimulator sim(lib.get(s.munition), atm);
 
         // Use a coarse HIGH-ANGLE table to find the achievable range envelope
@@ -1271,8 +1200,7 @@ static void test_altitude_both_nonzero() {
 
     for (const auto& s : scenarios) {
         const double launch_height = s.launcher_alt - s.target_alt;
-        AtmosphericConditions atm = isa_conditions(
-            std::min(s.launcher_alt, s.target_alt));
+        AtmosphericConditions atm;
         const MunitionSpec& spec = lib.get(s.munition);
         TrajectorySimulator sim(spec, atm);
 
@@ -1342,7 +1270,7 @@ static void test_altitude_fire_table() {
         const double launcher_alt  = 700.0;
         const double target_alt    = 0.0;
         const double launch_height = launcher_alt - target_alt;  // +700
-        AtmosphericConditions atm = isa_conditions(target_alt);
+        AtmosphericConditions atm;
         TrajectorySimulator sim(lib.get("7.62x51_m80_147gr"), atm);
 
         FireControlTable table;
@@ -1371,7 +1299,7 @@ static void test_altitude_fire_table() {
         const double launcher_alt  = 0.0;
         const double target_alt    = 200.0;
         const double launch_height = launcher_alt - target_alt;   // -200
-        AtmosphericConditions atm = isa_conditions(launcher_alt);
+        AtmosphericConditions atm;
         TrajectorySimulator sim(lib.get("338_lapua_250gr"), atm);
 
         FireControlTable table;
@@ -1432,7 +1360,7 @@ static void test_altitude_flight_time_within_max() {
 
     for (const auto& s : scenarios) {
         const double launch_height = s.launcher_alt - s.target_alt;
-        AtmosphericConditions atm = isa_conditions(s.target_alt);
+        AtmosphericConditions atm;
         TrajectorySimulator sim(lib.get(s.munition), atm);
 
         FireSolution sol = solve_elevation(sim,
@@ -1466,7 +1394,6 @@ int main() {
     test_wind();
     test_realtime_performance();
     test_streaming_callback();
-    test_altitude_varying_atmosphere();
     test_fire_control_basic();
     test_fire_control_high_angle();
     test_fire_control_out_of_range();
@@ -1480,7 +1407,6 @@ int main() {
     test_table_high_angle();
     test_table_lookup_below_min_range();
     test_fire_control_wind();
-    test_isa_above_stratopause();
     test_munition_library_load_file();
     test_table_with_target_altitude();
     test_table_wind_azimuth();
