@@ -4,6 +4,13 @@ project(BallisticsLib VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Ensure UTF-8 source and execution character sets on MSVC so that
+# µ (U+00B5) in printf strings is handled correctly regardless of the
+# system ANSI code page.
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 set(PROJECT_NAME ballistics)
 
 # Default to Release for real-time performance
