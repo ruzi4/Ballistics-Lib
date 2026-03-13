@@ -52,6 +52,19 @@ ShotResult shoot(
         return true;
     });
 
+    // Guard: if the projectile never crossed the target plane (e.g. the
+    // simulation timed out because the elevation was too shallow to loft
+    // the projectile up to target_z_m, or too near-vertical to return
+    // within max_time), report range = 0 so the ternary search and bisection
+    // discard this angle instead of acting on a bogus large horizontal
+    // distance accumulated during the time-out flight.
+    //
+    // A valid impact always clamps last.position.z exactly to cfg.ground_z
+    // (= target_z_m).  If the position differs by more than 1 m, no valid
+    // impact was recorded.
+    if (std::abs(last.position.z - target_z_m) > 1.0)
+        return {0.0, 0.0};
+
     const double h_range = std::sqrt(last.position.x * last.position.x
                                    + last.position.y * last.position.y);
     return {h_range, last.time};
@@ -104,10 +117,15 @@ FireSolution solve_elevation(
     if (muzzle_speed_ms <= 0.0)
         throw std::invalid_argument("muzzle_speed_ms must be positive");
 
-    // Upper search bound: 87° (3° below vertical).  Near-vertical shots
-    // produce degenerate range behaviour under drag (range → 0) so we stop
-    // just short of vertical to keep the bisection monotone.
-    constexpr double kLoSearch = -45.0;
+    // Search bounds: ±87° (3° inside vertical on both sides).
+    //
+    // The lower bound was previously −45°, which is insufficient when the
+    // launcher sits well above the target: the maximum-range angle can then
+    // be more negative than −45°, causing the ternary search to saturate at
+    // the boundary and the bisection interval to collapse to a single point.
+    // Extending to −87° makes the bound symmetric with the upper limit and
+    // accommodates any realistic launcher-above-target geometry.
+    constexpr double kLoSearch = -87.0;
     constexpr double kHiSearch =  87.0;
 
     const double az = orientation.azimuth_deg;
@@ -149,6 +167,17 @@ FireSolution solve_elevation(
         }
     }
 
+    // Guard: if the bisection never brought the range error within 50× the
+    // requested tolerance, the target range is not achievable at the given
+    // target altitude.  This can happen when the launcher is below the target
+    // and the requested horizontal range falls below the minimum descending-
+    // crossing range (the projectile must arc high above the target plane and
+    // the minimum horizontal distance at that plane is much larger than the
+    // requested range).  Returning valid=false in this case is correct;
+    // callers should use a FireControlTable to find the achievable envelope.
+    if (best_err > tolerance_m * 50.0)
+        return {};
+
     return FireSolution{best_elev, best_time * 1000.0, true};
 }
 
@@ -180,7 +209,8 @@ void FireControlTable::build(
         throw std::invalid_argument("muzzle_speed_ms must be positive");
     if (num_samples < 2) num_samples = 2;
 
-    constexpr double kLoSearch = -45.0;
+    // Symmetric bounds (see solve_elevation for the rationale behind −87°).
+    constexpr double kLoSearch = -87.0;
     constexpr double kHiSearch =  87.0;
 
     // Use a coarser dt during the sweep — accurate enough for table use
@@ -197,8 +227,32 @@ void FireControlTable::build(
                              /*iterations=*/20);
     (void)r_max_unused;
 
-    // The sweep covers only the monotone half that was requested
-    const double sweep_lo = high_angle ? theta_max : kLoSearch;
+    // Determine the effective lower bound of the sweep by locating the first
+    // angle that yields a positive range.  When the launcher is well above the
+    // target every angle gives a positive range and sweep_lo stays at
+    // kLoSearch.  When the launcher is at or below the target, angles shallower
+    // than the minimum lofting angle produce range=0 (either due to immediate
+    // termination or cannot-reach-target-altitude timeout).  Concentrating the
+    // samples in the useful band preserves look-up accuracy.
+    //
+    // The binary search costs 20 extra trajectory simulations — negligible
+    // versus the num_samples sweep that follows.
+    const double sweep_lo = [&]() -> double {
+        if (high_angle) return theta_max;
+        double lo_bs = kLoSearch, hi_bs = theta_max;
+        for (int i = 0; i < 20; ++i) {
+            const double mid_bs = (lo_bs + hi_bs) * 0.5;
+            const double r = shoot(sim, azimuth_deg, mid_bs, muzzle_speed_ms,
+                                   launch_height_m, target_altitude_m,
+                                   kBuildDt).range_m;
+            // Narrow toward the first positive-range angle
+            if (r > 0.0) hi_bs = mid_bs;
+            else         lo_bs = mid_bs;
+        }
+        // lo_bs is the highest angle still giving range=0; start the sweep
+        // just below it so the table captures the full low-range end.
+        return lo_bs;
+    }();
     const double sweep_hi = high_angle ? kHiSearch : theta_max;
     const double step     = (sweep_hi - sweep_lo) / (num_samples - 1);
 
