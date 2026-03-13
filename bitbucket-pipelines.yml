@@ -1,0 +1,55 @@
+image: ubuntu:22.04
+
+definitions:
+  steps:
+    - step: &install-deps
+        name: Install Dependencies
+        script:
+          - apt-get update -qq
+          - apt-get install -y cmake ninja-build g++ clang
+
+    - step: &build-test-gcc
+        name: Build & Test (GCC)
+        image: ubuntu:22.04
+        script:
+          - apt-get update -qq
+          - apt-get install -y cmake ninja-build g++
+          - cmake -S . -B build -G Ninja
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_CXX_COMPILER=g++
+            -DBALLISTICS_BUILD_TESTS=ON
+            -DBALLISTICS_BUILD_EXAMPLES=OFF
+          - cmake --build build
+          - ctest --test-dir build --output-on-failure
+
+    - step: &build-test-clang
+        name: Build & Test (Clang)
+        image: ubuntu:22.04
+        script:
+          - apt-get update -qq
+          - apt-get install -y cmake ninja-build clang
+          - cmake -S . -B build -G Ninja
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_CXX_COMPILER=clang++
+            -DBALLISTICS_BUILD_TESTS=ON
+            -DBALLISTICS_BUILD_EXAMPLES=OFF
+          - cmake --build build
+          - ctest --test-dir build --output-on-failure
+
+pipelines:
+  default:
+    - parallel:
+        - step: *build-test-gcc
+        - step: *build-test-clang
+
+  branches:
+    master:
+      - parallel:
+          - step: *build-test-gcc
+          - step: *build-test-clang
+
+  pull-requests:
+    '**':
+      - parallel:
+          - step: *build-test-gcc
+          - step: *build-test-clang
