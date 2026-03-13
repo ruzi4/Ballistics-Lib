@@ -147,7 +147,7 @@ int main(int argc, char* argv[]) {
     }
 
     const MunitionSpec& spec        = lib.get("5.56x45_m855_62gr");
-    const double        muzzle_speed = 930.0; // m/s
+    const double        muzzle_speed = spec.muzzle_velocity_ms;
     AtmosphericConditions atm        = isa_conditions(0.0);
 
     TrajectorySimulator sim(spec, atm);
@@ -209,8 +209,9 @@ int main(int argc, char* argv[]) {
             // Simulate a slight wind change too
             AtmosphericConditions windy = atm;
             windy.wind.velocity_ms = Vec3{5.0, 0.0, 0.0};  // 5 m/s crosswind
-            TrajectorySimulator sim2(lib.get("7.62x51_m80_147gr"), windy);
-            fcs.request_build(sim2, 853.0 /* 7.62 muzzle speed */);
+            const MunitionSpec& spec2 = lib.get("7.62x51_m80_147gr");
+            TrajectorySimulator sim2(spec2, windy);
+            fcs.request_build(sim2, spec2.muzzle_velocity_ms);
         }
 
         // --- Burn remaining frame time (simulate other game work) ---

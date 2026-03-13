@@ -60,9 +60,9 @@ int main(int argc, char* argv[]) {
     TrajectorySimulator sim(spec, atm);
 
     // -----------------------------------------------------------------------
-    // 3. Initial state: 45° elevation, muzzle velocity 930 m/s
+    // 3. Initial state: 45° elevation, muzzle velocity from munitions file
     // -----------------------------------------------------------------------
-    const double muzzle_speed = 930.0; // m/s
+    const double muzzle_speed = spec.muzzle_velocity_ms;
     const double angle_rad    = 45.0 * kDegToRad;
 
     ProjectileState state;

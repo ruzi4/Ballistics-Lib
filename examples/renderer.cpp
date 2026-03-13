@@ -41,16 +41,6 @@ static inline Vector3 to_rl(const Vec3& v)
 }
 
 // ---------------------------------------------------------------------------
-// Default muzzle speeds (m/s) — must match munitions.json order
-//   0: 9mm_fmj_115gr        370
-//   1: 5.56x45_m855_62gr    930
-//   2: 7.62x51_m80_147gr    840
-//   3: 338_lapua_250gr       915
-//   4: 50_bmg_660gr          930
-// ---------------------------------------------------------------------------
-static const float kDefaultMuzzleSpeeds[] = { 370.f, 930.f, 840.f, 915.f, 930.f };
-
-// ---------------------------------------------------------------------------
 // Data shared between background solver and render thread
 // ---------------------------------------------------------------------------
 struct SolveResult {
@@ -241,9 +231,9 @@ int main()
     // -----------------------------------------------------------------------
     float lx = 0.f, ly = 0.f, lz = 1.5f;       // launcher position
     float tx = 500.f, ty = 300.f, tz = 0.f;     // target position
-    float muzzle_speed = 930.f;                   // m/s
 
     int  mun_idx  = 1;    // 5.56×45 M855 as default
+    float muzzle_speed = (float)lib.get(mun_names[(size_t)mun_idx]).muzzle_velocity_ms;
     bool dd_edit  = false;
 
     // Auto-update muzzle speed when munition changes
@@ -300,9 +290,7 @@ int main()
         // Update muzzle speed default when munition selection changes
         // -------------------------------------------------------------------
         if (mun_idx != last_mun_for_speed) {
-            size_t idx = (size_t)mun_idx;
-            if (idx < sizeof(kDefaultMuzzleSpeeds) / sizeof(float))
-                muzzle_speed = kDefaultMuzzleSpeeds[idx];
+            muzzle_speed = (float)lib.get(mun_names[(size_t)mun_idx]).muzzle_velocity_ms;
             last_mun_for_speed = mun_idx;
         }
 

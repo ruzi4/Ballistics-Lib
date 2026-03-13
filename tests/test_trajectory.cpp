@@ -148,6 +148,7 @@ static void test_munition_library() {
                 "density_kg_m3": 11000,
                 "reference_area_m2": 1e-4,
                 "drag_coefficient": 0.30,
+                "muzzle_velocity_ms": 900.0,
                 "diameter_m": 0.01
             }
         ]
@@ -166,6 +167,7 @@ static void test_munition_library() {
     CHECK_NEAR(spec.density_kg_m3,      11000.0, 1e-10);
     CHECK_NEAR(spec.reference_area_m2,  1e-4,    1e-15);
     CHECK_NEAR(spec.drag_coefficient,   0.30,    1e-15);
+    CHECK_NEAR(spec.muzzle_velocity_ms, 900.0,   1e-10);
     CHECK_NEAR(spec.diameter_m,         0.01,    1e-15);
 
     // Derived quantities
