@@ -36,27 +36,44 @@ horizontal, 90° = straight up.
 
 ## Requirements
 
-- CMake 3.16+
-- A C++17-capable compiler (GCC, Clang, or MSVC)
+- CMake 3.20+
+- A C++17-capable compiler (GCC 9+, Clang 10+, or MSVC 2019+)
 - Internet access at configure time (nlohmann/json is fetched via `FetchContent`;
   raylib and raygui are fetched only when examples are enabled)
 
 ## Building
 
+Both tests and examples are built by default. Pass `-DBALLISTICS_BUILD_TESTS=OFF`
+or `-DBALLISTICS_BUILD_EXAMPLES=OFF` to skip either.
+
 ```bash
-# Library only
+# Library + tests + examples (default)
 cmake -B build
 cmake --build build
 
-# Library + examples (includes the 3D renderer)
-cmake -B build -DBALLISTICS_BUILD_EXAMPLES=ON
+# Library only
+cmake -B build -DBALLISTICS_BUILD_TESTS=OFF -DBALLISTICS_BUILD_EXAMPLES=OFF
 cmake --build build
 
-# Library + tests
-cmake -B build -DBALLISTICS_BUILD_TESTS=ON
+# Run tests
+cmake -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+### Windows (MSVC)
+
+The build is fully supported on Windows with Visual Studio 2019 or later.
+Use the `--config` flag to select the build configuration:
+
+```bat
+cmake -B build
+cmake --build build --config Release
+ctest --test-dir build --build-config Release --output-on-failure
+```
+
+Source files containing `µ` (U+00B5) are compiled with `/utf-8` automatically
+so console output is correct regardless of the system ANSI code page.
 
 ## Quick start
 

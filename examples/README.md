@@ -9,8 +9,17 @@ cmake -B build -DBALLISTICS_BUILD_EXAMPLES=ON
 cmake --build build
 ```
 
-Each binary is placed in `build/examples/` with a `data/` subdirectory copied
-alongside it automatically.
+On Windows with MSVC, add `--config Release` (or `Debug`) to the build step:
+
+```bat
+cmake -B build -DBALLISTICS_BUILD_EXAMPLES=ON
+cmake --build build --config Release
+```
+
+Each binary is placed next to its build output directory (`build/examples/` on
+single-config generators; `build/examples/Release/` or `build/examples/Debug/`
+with MSVC multi-config generators). A `data/` subdirectory containing
+`munitions.json` is copied alongside each binary automatically at build time.
 
 ---
 
@@ -58,5 +67,7 @@ For full documentation of the renderer's capabilities and controls see
   impact markers
 - Left-hand GUI panel: munition dropdown, muzzle speed slider, position sliders
   for launcher and target, live fire-solution readout
-- Right-mouse drag to orbit; scroll wheel to zoom
+- Right-mouse drag to orbit; scroll wheel to zoom; middle-mouse drag to pan
+- View Focus dropdown to snap the orbit centre to the launcher, target, or midpoint
 - Keyboard shortcuts to move the launcher and target (see linked README)
+- On Windows, opens only the graphics window (no redundant console window)

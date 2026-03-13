@@ -1,7 +1,7 @@
 # Ballistics-Lib Renderer: Session Handoff
 
 ## Branch
-`claude/improve-viewport-rendering-HY6t1`
+`claude/add-windows-portability-mMUzN`
 
 ## Repository Overview
 C++17 ballistic trajectory simulation library with an interactive 3D renderer (`examples/renderer.cpp`) built on raylib 5.0 + raygui 4.0. The renderer places a launcher and target in a scene, computes a fire solution asynchronously via `solve_elevation()`, and draws the trajectory arc.
@@ -52,6 +52,22 @@ C++17 ballistic trajectory simulation library with an interactive 3D renderer (`
 ### 5. Updated Controls Help
 - Added "Middle-mouse drag — pan camera" at `renderer.cpp:563`
 - Expanded help box height from 178/180 to 194/198 pixels
+
+### 6. Windows Portability (this session)
+- `CMakeLists.txt`: added `if(MSVC) add_compile_options(/utf-8) endif()` so `µ`
+  in `printf` strings renders correctly regardless of Windows ANSI code page
+- `CMakeLists.txt`: added `-Wno-nan-infinity-disabled` for Clang to silence a
+  third-party nlohmann_json warning triggered by `-ffast-math`
+- `tests/CMakeLists.txt`: added `POST_BUILD` copy of `data/` using
+  `$<TARGET_FILE_DIR:test_trajectory>` so CTest finds `munitions.json` in MSVC
+  multi-config subdirectories (`Release/`, `Debug/`, etc.)
+- `examples/CMakeLists.txt`: added `WIN32` keyword to `ballistics_renderer` so
+  Windows shows only the graphics window (no redundant console window)
+- `.github/workflows/ci.yml` (new): matrix CI covering Windows/MSVC,
+  Linux/GCC, and Linux/Clang; examples excluded from headless CI
+- `src/fire_control.cpp`: copied structured binding `theta_max` to a plain
+  `const double` before the lambda — Clang flagged the direct capture as a
+  C++20 extension
 
 ---
 
@@ -113,6 +129,7 @@ Two things need fixing:
 
 ### Build Notes
 - `CMakeLists.txt` uses `cmake_minimum_required(VERSION 3.20)`
-- Requires X11 dev packages: `libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev`
-- Build: `mkdir build && cd build && cmake .. && make`
+- Linux: requires X11 dev packages: `libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev`
+- Linux build: `cmake -B build -DBALLISTICS_BUILD_EXAMPLES=ON && cmake --build build`
+- Windows build: `cmake -B build -DBALLISTICS_BUILD_EXAMPLES=ON && cmake --build build --config Release`
 - Syntax-only check (no X11 needed): `g++ -std=c++17 -fsyntax-only -I include -I build/_deps/raylib-src/src -I build/_deps/raylib-src/examples/shapes examples/renderer.cpp`

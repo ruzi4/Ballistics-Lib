@@ -9,10 +9,21 @@ Enable examples when configuring CMake. raylib 5.0 and raygui 4.0 are fetched
 automatically at configure time — no manual dependency installation required.
 
 ```bash
+# Linux / macOS
 cmake -B build -DBALLISTICS_BUILD_EXAMPLES=ON
 cmake --build build
 ./build/examples/ballistics_renderer
 ```
+
+```bat
+:: Windows (MSVC)
+cmake -B build -DBALLISTICS_BUILD_EXAMPLES=ON
+cmake --build build --config Release
+build\examples\Release\ballistics_renderer.exe
+```
+
+On Windows, `ballistics_renderer` opens only the graphics window — no
+redundant console window appears.
 
 The binary expects a `data/` directory (containing `munitions.json`) alongside it.
 The CMake build copies this automatically.
@@ -29,7 +40,7 @@ The CMake build copies this automatically.
 | Trajectory | Orange arc | Full ballistic path from launcher to target |
 | Apex marker | Yellow sphere | Highest point on the trajectory |
 | Impact marker | Gold sphere | Where the projectile reaches the target altitude |
-| Ground grid | White lines | 10 m cells; covers ±1500 m in each direction |
+| Ground grid | White lines | 10 m cells; covers ±4000 m in each direction |
 | Axis arrows | R/G/B lines | Red = East (+X), Green = North (−Z in scene), Blue = Up (+Y) |
 
 ---
@@ -127,8 +138,22 @@ Keyboard input is suspended while the munition dropdown is open.
 
 | Action | Effect |
 |---|---|
-| Right-mouse drag | Orbit camera around the launcher–target midpoint |
-| Scroll wheel | Zoom in / out (5 m to 8 km) |
+| Right-mouse drag | Orbit camera around the current focus point |
+| Middle-mouse drag | Pan the focus point in the camera's horizontal plane |
+| Scroll wheel | Zoom in / out (5 m to 8 km); zoom speed scales with distance |
+
+### View Focus
+
+A **View Focus** dropdown in the GUI panel controls what the camera orbits and
+pans around:
+
+| Mode | Orbit / pan centre |
+|---|---|
+| Free | Freely panned point (middle-mouse drag) |
+| Launcher | Launcher position (pan disabled) |
+| Target | Target position (pan disabled) |
+
+Switching from Free to Launcher or Target resets the pan offset.
 
 ---
 
