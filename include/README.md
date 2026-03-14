@@ -49,10 +49,7 @@ Projectile specification.
 ### `ballistics/atmosphere.hpp`
 Atmospheric conditions and models.
 
-- **`Wind`** — 3D wind velocity vector (m/s, world space)
-- **`AtmosphericConditions`** — temperature, pressure, humidity, air density, wind
-- **`compute_air_density()`** — ideal gas law with Magnus-formula humidity correction
-- **`isa_conditions()`** — International Standard Atmosphere from 0 – 20 km
+- **`AtmosphericConditions`** — constant air density; default 1.225 kg/m³ (ISA sea level)
 
 ### `ballistics/math/vec3.hpp`
 Double-precision 3D vector (`Vec3`) with fully inlined arithmetic, dot/cross

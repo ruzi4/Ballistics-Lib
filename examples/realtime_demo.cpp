@@ -53,9 +53,8 @@ int main(int argc, char* argv[]) {
     std::printf("  BC     : %.2f kg/m²\n", spec.ballistic_coefficient());
     std::printf("\n");
 
-    // ISA atmosphere at sea level with a 5 m/s headwind
-    AtmosphericConditions atm = isa_conditions(/*altitude_m=*/0.0);
-    atm.wind.velocity_ms = Vec3{-5.0, 0.0, 0.0}; // 5 m/s headwind on x-axis
+    // Standard sea-level atmosphere
+    AtmosphericConditions atm;
 
     TrajectorySimulator sim(spec, atm);
 

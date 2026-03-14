@@ -28,7 +28,7 @@ with MSVC multi-config generators). A `data/` subdirectory containing
 Demonstrates integrating `TrajectorySimulator` into a 60 Hz game loop.
 
 - Loads the `5.56x45_m855_62gr` munition from `data/munitions.json`
-- Fires at 45° elevation, 930 m/s muzzle velocity into a 5 m/s headwind
+- Fires at 45° elevation, 930 m/s muzzle velocity
 - Runs the projectile at **60 Hz** with **4 physics sub-steps per frame** (240 Hz integration)
 - Measures per-frame wall time and reports impact position, range, and speed
 - Cross-validates against a batch offline simulation for accuracy

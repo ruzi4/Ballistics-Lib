@@ -148,7 +148,7 @@ int main(int argc, char* argv[]) {
 
     const MunitionSpec& spec        = lib.get("5.56x45_m855_62gr");
     const double        muzzle_speed = spec.muzzle_velocity_ms;
-    AtmosphericConditions atm        = isa_conditions(0.0);
+    AtmosphericConditions atm;
 
     TrajectorySimulator sim(spec, atm);
 
@@ -206,11 +206,8 @@ int main(int argc, char* argv[]) {
         // --- Simulate weapon change at frame 60 (triggers a rebuild) ---
         if (frame == 60) {
             std::printf("\n[Frame 60] Weapon change — requesting new table build...\n\n");
-            // Simulate a slight wind change too
-            AtmosphericConditions windy = atm;
-            windy.wind.velocity_ms = Vec3{5.0, 0.0, 0.0};  // 5 m/s crosswind
             const MunitionSpec& spec2 = lib.get("7.62x51_m80_147gr");
-            TrajectorySimulator sim2(spec2, windy);
+            TrajectorySimulator sim2(spec2, atm);
             fcs.request_build(sim2, spec2.muzzle_velocity_ms);
         }
 
