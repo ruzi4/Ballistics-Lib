@@ -8,8 +8,8 @@
 //   Transform      : rl = { ball.x, ball.z, -ball.y }
 //
 // Controls
-//   W/S/A/D           – move target North/South/East/West
-//   Q / E (key)       – lower / raise target altitude
+//   W/S/A/D           – move target North/South/East/West  (disabled when moving target active)
+//   Q / E (key)       – lower / raise target altitude      (disabled when moving target active)
 //   Arrow keys        – move launcher North/South/East/West
 //   Page Up / Page Dn – raise / lower launcher altitude
 //   Right-mouse drag  – orbit camera
@@ -209,7 +209,7 @@ int main()
     // Window
     // -----------------------------------------------------------------------
     SetConfigFlags(FLAG_MSAA_4X_HINT);
-    InitWindow(1420, 820, "Ballistics Trajectory Renderer");
+    InitWindow(1420, 920, "Ballistics Trajectory Renderer");
     SetTargetFPS(60);
 
     // -----------------------------------------------------------------------
@@ -231,6 +231,17 @@ int main()
     // -----------------------------------------------------------------------
     float lx = 0.f, ly = 0.f, lz = 1.5f;       // launcher position
     float tx = 500.f, ty = 300.f, tz = 0.f;     // target position
+
+    // Moving target state
+    bool  target_moving       = false;
+    float target_speed        = 20.f;    // m/s
+    float target_yaw          = 0.f;     // degrees, 0=North, 90=East
+    float target_travel_dist  = 200.f;   // metres
+    float target_travel_prog  = 0.f;     // current progress (0..dist), ping-pong
+    bool  target_travel_fwd   = true;    // ping-pong direction
+    float target_origin_x     = tx;      // captured on toggle-on
+    float target_origin_y     = ty;
+    bool  prev_target_moving  = false;
 
     int  mun_idx  = 1;    // 5.56×45 M855 as default
     float muzzle_speed = (float)lib.get(mun_names[(size_t)mun_idx]).muzzle_velocity_ms;
@@ -295,17 +306,30 @@ int main()
         }
 
         // -------------------------------------------------------------------
+        // Moving target: capture origin on toggle-on
+        // -------------------------------------------------------------------
+        if (target_moving && !prev_target_moving) {
+            target_origin_x    = tx;
+            target_origin_y    = ty;
+            target_travel_prog = 0.f;
+            target_travel_fwd  = true;
+        }
+        prev_target_moving = target_moving;
+
+        // -------------------------------------------------------------------
         // Keyboard controls (disabled while dropdown is open)
         // -------------------------------------------------------------------
         if (!dd_edit && !vf_dd_edit) {
             const float spd = 80.f * dt;   // m/s movement speed
-            // Target movement
-            if (IsKeyDown(KEY_W)) ty += spd;
-            if (IsKeyDown(KEY_S)) ty -= spd;
-            if (IsKeyDown(KEY_D)) tx += spd;
-            if (IsKeyDown(KEY_A)) tx -= spd;
-            if (IsKeyDown(KEY_E)) tz += spd * 0.3f;
-            if (IsKeyDown(KEY_Q)) tz -= spd * 0.3f;
+            // Target movement (disabled when moving target is active)
+            if (!target_moving) {
+                if (IsKeyDown(KEY_W)) ty += spd;
+                if (IsKeyDown(KEY_S)) ty -= spd;
+                if (IsKeyDown(KEY_D)) tx += spd;
+                if (IsKeyDown(KEY_A)) tx -= spd;
+                if (IsKeyDown(KEY_E)) tz += spd * 0.3f;
+                if (IsKeyDown(KEY_Q)) tz -= spd * 0.3f;
+            }
             // Launcher movement
             if (IsKeyDown(KEY_UP))        ly += spd;
             if (IsKeyDown(KEY_DOWN))      ly -= spd;
@@ -318,6 +342,33 @@ int main()
         // Clamp altitudes to >= 0
         tz = std::max(tz, 0.f);
         lz = std::max(lz, 0.f);
+
+        // -------------------------------------------------------------------
+        // Moving target: update position each frame (ping-pong)
+        // -------------------------------------------------------------------
+        if (target_moving && target_travel_dist > 0.f) {
+            if (target_travel_prog > target_travel_dist)
+                target_travel_prog = target_travel_dist;
+
+            float step = target_speed * dt;
+            if (target_travel_fwd) {
+                target_travel_prog += step;
+                if (target_travel_prog >= target_travel_dist) {
+                    target_travel_prog = target_travel_dist;
+                    target_travel_fwd  = false;
+                }
+            } else {
+                target_travel_prog -= step;
+                if (target_travel_prog <= 0.f) {
+                    target_travel_prog = 0.f;
+                    target_travel_fwd  = true;
+                }
+            }
+
+            float yaw_rad = target_yaw * (float)kDegToRad;
+            tx = target_origin_x + target_travel_prog * sinf(yaw_rad);
+            ty = target_origin_y + target_travel_prog * cosf(yaw_rad);
+        }
 
         // -------------------------------------------------------------------
         // Detect input changes → mark dirty
@@ -439,6 +490,24 @@ int main()
         draw_launcher(rl_l, disp_az, disp_el);
         draw_target(rl_t);
 
+        // Moving target: draw travel path
+        if (target_moving && target_travel_dist > 0.f) {
+            float yaw_rad = target_yaw * (float)kDegToRad;
+            Vec3 path_start = { target_origin_x, target_origin_y, 0.0 };
+            Vec3 path_end   = {
+                target_origin_x + target_travel_dist * sinf(yaw_rad),
+                target_origin_y + target_travel_dist * cosf(yaw_rad),
+                0.0
+            };
+            Vector3 rl_ps = to_rl(path_start);
+            Vector3 rl_pe = to_rl(path_end);
+            rl_ps.y = 0.05f;
+            rl_pe.y = 0.05f;
+            DrawLine3D(rl_ps, rl_pe, { 255, 100, 100, 200 });
+            DrawSphere({ rl_ps.x, 0.1f, rl_ps.z }, 0.4f, { 200, 200, 50, 200 });
+            DrawSphere({ rl_pe.x, 0.1f, rl_pe.z }, 0.4f, { 200, 200, 50, 200 });
+        }
+
         if (current.valid && !current.traj.empty()) {
             draw_trajectory(current.traj);
             // Impact marker at trajectory end
@@ -510,6 +579,8 @@ int main()
         // ---- Target ---------------------------------------------------------
         DrawText("TARGET  (x=East, y=North, z=Alt  metres)", mx, y, 12, sec_col); y += 17;
 
+        if (target_moving) GuiLock();
+
         DrawText("X(E)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
                      nullptr, nullptr, &tx, -2000.f, 2000.f);
@@ -526,7 +597,33 @@ int main()
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
                      nullptr, nullptr, &tz, 0.f, 500.f);
         DrawText(TextFormat("%.1f", tz), mx + cw - 62, y + 6, 13, val_col);
-        y += rh + 14;
+        y += rh + 10;
+
+        if (target_moving) GuiUnlock();
+
+        // ---- Moving Target --------------------------------------------------
+        DrawText("MOVING TARGET", mx, y, 12, sec_col); y += 17;
+
+        GuiCheckBox({ (float)mx, (float)y, 20.f, 20.f }, "Enable", &target_moving);
+        y += rh + 3;
+
+        DrawText("Speed (m/s)", mx, y + 6, 12, ctrl_col);
+        GuiSliderBar({ (float)mx, (float)(y + 18), (float)(cw - 68), (float)rh },
+                     nullptr, nullptr, &target_speed, 0.5f, 200.f);
+        DrawText(TextFormat("%.1f", target_speed), mx + cw - 62, y + 24, 14, val_col);
+        y += rh + 22;
+
+        DrawText("Heading (deg)", mx, y + 6, 12, ctrl_col);
+        GuiSliderBar({ (float)mx, (float)(y + 18), (float)(cw - 68), (float)rh },
+                     nullptr, nullptr, &target_yaw, 0.f, 360.f);
+        DrawText(TextFormat("%.0f", target_yaw), mx + cw - 62, y + 24, 14, val_col);
+        y += rh + 22;
+
+        DrawText("Distance (m)", mx, y + 6, 12, ctrl_col);
+        GuiSliderBar({ (float)mx, (float)(y + 18), (float)(cw - 68), (float)rh },
+                     nullptr, nullptr, &target_travel_dist, 10.f, 2000.f);
+        DrawText(TextFormat("%.0f", target_travel_dist), mx + cw - 62, y + 24, 14, val_col);
+        y += rh + 26;
 
         // ---- Fire Solution --------------------------------------------------
         DrawText("FIRE SOLUTION", mx, y, 12, sec_col); y += 18;
@@ -554,12 +651,13 @@ int main()
         y += rh + 14;
 
         // ---- Keyboard help (anchored to bottom of panel) --------------------
-        int hy = H - 194;
-        DrawRectangle(mx - 4, hy - 8, cw + 8, 198, { 28, 30, 40, 200 });
+        int hy = H - 210;
+        DrawRectangle(mx - 4, hy - 8, cw + 8, 214, { 28, 30, 40, 200 });
         DrawText("CONTROLS", mx, hy, 12, sec_col); hy += 18;
         const Color hc = { 175, 178, 200, 255 };
         DrawText("W / S / A / D      target  N / S / E / W", mx, hy, 12, hc); hy += 16;
         DrawText("Q / E              target  altitude",       mx, hy, 12, hc); hy += 16;
+        DrawText("  (disabled while moving target is active)", mx, hy, 11, { 140, 140, 160, 200 }); hy += 16;
         DrawText("Arrow keys         launcher N / S / E / W", mx, hy, 12, hc); hy += 16;
         DrawText("Page Up / Down     launcher altitude",       mx, hy, 12, hc); hy += 16;
         DrawText("Right-mouse drag   orbit camera",            mx, hy, 12, hc); hy += 16;
