@@ -169,7 +169,12 @@ static SolveResult solve_async(const SolveParams& p)
     cfg.dt       = 1.0 / 60.0;                            // 60 Hz — fine for visualization
     cfg.use_rk4  = true;
     cfg.max_time = used_tof * 1.5 + 2.0;
-    cfg.ground_z = aim_pos.z - 0.5;                       // slightly below impact plane
+    // When the launcher is below the target the ascending solution reaches the
+    // target plane on the way UP.  Setting ground_z to target altitude would
+    // cause simulate() to terminate immediately (launcher starts below ground_z).
+    // Use the lower of launcher and target altitude so the floor is always
+    // below the launch point; the max_time cap stops the trajectory near impact.
+    cfg.ground_z = std::min(p.launcher_pos.z, aim_pos.z) - 0.5;
 
     auto states = sim.simulate(init, cfg);
     out.traj.reserve(states.size());
