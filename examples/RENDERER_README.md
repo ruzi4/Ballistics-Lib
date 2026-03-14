@@ -92,6 +92,25 @@ how velocity affects range and trajectory shape.
 | Y(N) | North / South | −2000 to +2000 m |
 | Alt | Altitude | 0 to 500 m |
 
+### Moving Target
+
+| Control | Description | Range |
+|---|---|---|
+| Enable | Checkbox to toggle target movement on/off | — |
+| Speed | Target travel speed | 0.5 – 200 m/s |
+| Heading | Yaw direction of travel (0° = North, 90° = East) | 0 – 360° |
+| Distance | Total distance the target travels before reversing | 10 – 2000 m |
+
+When enabled, the target ping-pongs (travels back and forth) along the heading
+from its current position. The origin is captured when movement is toggled on.
+Altitude remains constant during movement. All target keyboard controls
+(W/S/A/D, Q/E) and target position sliders are disabled while movement is
+active. The fire solution continuously re-solves against the target's current
+position.
+
+A red travel path line and yellow endpoint markers appear on the ground to
+show the full extent of the target's movement.
+
 ### Fire Solution (read-only)
 
 Updated automatically whenever any input changes. The solver runs on a
@@ -133,6 +152,7 @@ Possible status messages:
 
 Movement speed is **80 m/s** (hold the key and release to stop).
 Keyboard input is suspended while the munition dropdown is open.
+Target keys (W/S/A/D, Q/E) are disabled while the moving target is active.
 
 ### Mouse
 

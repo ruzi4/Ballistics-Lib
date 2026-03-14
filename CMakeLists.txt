@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.20...4.1)
 project(BallisticsLib VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -22,6 +22,13 @@ endif()
 # Dependencies
 # ---------------------------------------------------------------------------
 include(FetchContent)
+
+# CMake 4.x requires cmake_minimum_required >= 3.5, but some fetched
+# dependencies (raylib 5.0, nlohmann_json 3.11) declare lower versions.
+# Override their minimum policy version so they build cleanly under CMake 4.x.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL "4.0")
+    set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
 
 FetchContent_Declare(
     nlohmann_json
