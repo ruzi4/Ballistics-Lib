@@ -45,7 +45,7 @@ FetchContent_MakeAvailable(raygui)
 # WIN32 suppresses the extra console window on Windows so only the graphics
 # window is shown.  raylib provides its own WinMain shim that calls main(),
 # so this keyword is effectively a no-op on Linux/macOS.
-add_executable(ballistics_renderer WIN32 renderer.cpp)
+add_executable(ballistics_renderer renderer.cpp)
 
 target_link_libraries(ballistics_renderer PRIVATE
     ballistics
