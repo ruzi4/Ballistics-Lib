@@ -411,6 +411,10 @@ int main()
 
     const int PANEL_W = 340;
 
+    // Legend visibility toggles (F1 = scene legend, F2 = controls legend)
+    bool show_scene_legend = true;
+    bool show_ctrl_legend  = false;
+
     // -----------------------------------------------------------------------
     // Main loop
     // -----------------------------------------------------------------------
@@ -468,6 +472,10 @@ int main()
         // Clamp altitudes to >= 0
         tz = std::max(tz, 0.f);
         lz = std::max(lz, 0.f);
+
+        // Legend toggles (always active regardless of dropdown state)
+        if (IsKeyPressed(KEY_F1)) show_scene_legend = !show_scene_legend;
+        if (IsKeyPressed(KEY_F2)) show_ctrl_legend  = !show_ctrl_legend;
 
         // -------------------------------------------------------------------
         // Moving target: update position each frame (ping-pong)
@@ -731,6 +739,108 @@ int main()
 
         EndScissorMode();
 
+        // ---- Legend toggle buttons (top-right of viewport) ----------------
+        {
+            const int btn_w = 138, btn_h = 22, btn_gap = 4;
+            const int btn_x = W - btn_w - 8;
+            int btn_y = 8;
+            const Vector2 mpos = GetMousePosition();
+
+            auto draw_legend_btn = [&](int bx, int by, const char* label, bool active, bool& flag) {
+                Color bg  = active ? Color{ 50,  95,  50, 230} : Color{38, 42, 58, 210};
+                Color fg  = active ? Color{170, 245, 170, 255} : Color{155, 160, 188, 255};
+                Color bdr = active ? Color{80, 140,  80, 255}  : Color{70,  75, 105, 255};
+                DrawRectangle(bx, by, btn_w, btn_h, bg);
+                DrawRectangleLines(bx, by, btn_w, btn_h, bdr);
+                DrawText(label, bx + 7, by + 5, 11, fg);
+                Rectangle r = {(float)bx, (float)by, (float)btn_w, (float)btn_h};
+                if (CheckCollisionPointRec(mpos, r) && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+                    flag = !flag;
+            };
+
+            draw_legend_btn(btn_x, btn_y, "Scene Legend  [F1]", show_scene_legend, show_scene_legend);
+            btn_y += btn_h + btn_gap;
+            draw_legend_btn(btn_x, btn_y, "Controls       [F2]", show_ctrl_legend,  show_ctrl_legend);
+        }
+
+        // ---- Scene legend (bottom-left of viewport) -----------------------
+        if (show_scene_legend) {
+            struct LegEntry { Color col; bool circle; const char* label; };
+            const LegEntry entries[] = {
+                {{ 55, 115,  55, 255}, false, "Launcher  (green box + barrel)"},
+                {{220,  50,  50, 255}, true,  "Target  (red sphere)"},
+                {{255, 165,   0, 255}, false, "Trajectory arc  (orange)"},
+                {{253, 249,   0, 255}, true,  "Trajectory apex  (yellow dot)"},
+                {{255, 200,   0, 255}, true,  "Impact point  (gold dot)"},
+                {{  0, 220, 220, 255}, true,  "Intercept point  (cyan sphere)"},
+                {{255, 100, 100, 200}, false, "Moving target path  (red)"},
+                {{200, 200,  50, 200}, true,  "Path endpoints  (yellow)"},
+                {{255,   0,   0, 255}, false, "East axis  / Muzzle direction"},
+                {{  0, 228,  48, 255}, false, "North axis  (Blue = Up)"},
+            };
+            constexpr int N = (int)(sizeof(entries) / sizeof(entries[0]));
+            const int row   = 18;
+            const int leg_w = 248;
+            int leg_x = PANEL_W + 10;
+            int leg_y = H - 10 - N * row - 24;
+
+            DrawRectangle(leg_x - 6, leg_y - 22, leg_w, N * row + 28, {15, 17, 28, 215});
+            DrawRectangleLines(leg_x - 6, leg_y - 22, leg_w, N * row + 28, {70, 75, 105, 255});
+            DrawText("SCENE LEGEND", leg_x, leg_y - 16, 11, {150, 155, 180, 255});
+
+            for (int i = 0; i < N; ++i) {
+                const auto& e = entries[i];
+                if (e.circle) DrawCircle(leg_x + 6, leg_y + 7, 5.f, e.col);
+                else          DrawRectangle(leg_x, leg_y + 2, 12, 11, e.col);
+                DrawText(e.label, leg_x + 19, leg_y + 1, 11, {195, 198, 215, 255});
+                leg_y += row;
+            }
+        }
+
+        // ---- Controls legend (right side of viewport) ---------------------
+        if (show_ctrl_legend) {
+            const Color sec = {150, 155, 180, 255};
+            const Color hc  = {185, 188, 210, 255};
+            const Color dim = {125, 128, 152, 200};
+            const int   fs  = 12;
+            const int   leg_w = 300;
+            int leg_x = W - leg_w - 10;
+            int leg_y = 44;  // below the toggle buttons
+
+            // Draw background first (pre-calculated height)
+            const int bg_h = 442;
+            DrawRectangle(leg_x - 8, leg_y - 6, leg_w + 16, bg_h, {15, 17, 28, 215});
+            DrawRectangleLines(leg_x - 8, leg_y - 6, leg_w + 16, bg_h, {70, 75, 105, 255});
+
+            DrawText("CONTROLS LEGEND", leg_x, leg_y, 13, sec);         leg_y += 22;
+
+            DrawText("KEYBOARD",                                leg_x,      leg_y, 11, sec); leg_y += 16;
+            DrawText("W / S / A / D      target N/S/E/W",      leg_x + 8,  leg_y, fs, hc);  leg_y += 16;
+            DrawText("Q / E              target altitude",      leg_x + 8,  leg_y, fs, hc);  leg_y += 14;
+            DrawText("  (disabled while moving target active)", leg_x + 8,  leg_y, 11, dim); leg_y += 16;
+            DrawText("Arrow keys         launcher N/S/E/W",     leg_x + 8,  leg_y, fs, hc);  leg_y += 16;
+            DrawText("Page Up / Down     launcher altitude",    leg_x + 8,  leg_y, fs, hc);  leg_y += 16;
+            DrawText("F1                 toggle scene legend",  leg_x + 8,  leg_y, fs, hc);  leg_y += 16;
+            DrawText("F2                 toggle this legend",   leg_x + 8,  leg_y, fs, hc);  leg_y += 22;
+
+            DrawText("VIEWPORT (3D view)",                              leg_x,     leg_y, 11, sec); leg_y += 16;
+            DrawText("Right-mouse drag   orbit camera",                 leg_x + 8, leg_y, fs, hc);  leg_y += 16;
+            DrawText("Middle-mouse drag  pan (Free focus mode only)",   leg_x + 8, leg_y, fs, hc);  leg_y += 16;
+            DrawText("Scroll wheel       zoom in / out",                leg_x + 8, leg_y, fs, hc);  leg_y += 22;
+
+            DrawText("UI PANEL SECTIONS",                                       leg_x,     leg_y, 11, sec); leg_y += 16;
+            DrawText("MUNITION       ammo type + muzzle speed",                 leg_x + 8, leg_y, fs, hc);  leg_y += 16;
+            DrawText("LAUNCHER       position in metres (x=E, y=N, z=Alt)",    leg_x + 8, leg_y, fs, hc);  leg_y += 16;
+            DrawText("TARGET         position in metres (x=E, y=N, z=Alt)",    leg_x + 8, leg_y, fs, hc);  leg_y += 16;
+            DrawText("MOVING TARGET  speed, heading, travel distance",          leg_x + 8, leg_y, fs, hc);  leg_y += 16;
+            DrawText("FIRE SOLUTION  computed az/el, slew status, range, ToF", leg_x + 8, leg_y, fs, hc);  leg_y += 16;
+            DrawText("VIEW FOCUS     camera follow mode (Free/Launcher/Target)",leg_x + 8, leg_y, fs, hc);  leg_y += 22;
+
+            DrawText("COORDINATE SYSTEM",                          leg_x,     leg_y, 11, sec); leg_y += 16;
+            DrawText("x = East,  y = North,  z = Altitude (up)",  leg_x + 8, leg_y, fs, hc); leg_y += 16;
+            DrawText("Ballistics lib right-handed z-up convention",leg_x + 8, leg_y, fs, hc);
+        }
+
         // ---- GUI panel (left side) ----------------------------------------
         DrawRectangle(0, 0, PANEL_W, H, { 40, 43, 54, 255 });
         DrawRectangle(PANEL_W - 2, 0, 2, H, { 65, 70, 95, 255 }); // panel border
@@ -827,7 +937,10 @@ int main()
         DrawText(TextFormat("%.0f", target_travel_dist), mx + cw - 62, y + 24, 14, val_col);
         y += rh + 26;
 
-        // ---- Fire Solution --------------------------------------------------
+        // ---- Fire Solution (fixed-height block so View Focus never moves) ---
+        // Reserve FIRE_SOL_H pixels regardless of how many lines are drawn.
+        const int FIRE_SOL_H = 210;
+        const int fire_sol_top = y;
         DrawText("FIRE SOLUTION", mx, y, 12, sec_col); y += 18;
 
         if (current.valid) {
@@ -872,24 +985,23 @@ int main()
                      current.alt_diff_m), mx, y, 12, err_col); y += 16;
         }
 
+        // Snap y to the fixed end of the fire solution block so View Focus
+        // is always at the same position regardless of solution state.
+        y = fire_sol_top + FIRE_SOL_H;
+
         // ---- View Focus -----------------------------------------------------
         DrawText("VIEW FOCUS", mx, y, 12, sec_col); y += 16;
         const int vf_dd_y = y; // save Y for deferred dropdown draw
         y += rh + 14;
 
-        // ---- Keyboard help (anchored to bottom of panel) --------------------
-        int hy = H - 210;
-        DrawRectangle(mx - 4, hy - 8, cw + 8, 214, { 28, 30, 40, 200 });
-        DrawText("CONTROLS", mx, hy, 12, sec_col); hy += 18;
-        const Color hc = { 175, 178, 200, 255 };
-        DrawText("W / S / A / D      target  N / S / E / W", mx, hy, 12, hc); hy += 16;
-        DrawText("Q / E              target  altitude",       mx, hy, 12, hc); hy += 16;
-        DrawText("  (disabled while moving target is active)", mx, hy, 11, { 140, 140, 160, 200 }); hy += 16;
-        DrawText("Arrow keys         launcher N / S / E / W", mx, hy, 12, hc); hy += 16;
-        DrawText("Page Up / Down     launcher altitude",       mx, hy, 12, hc); hy += 16;
-        DrawText("Right-mouse drag   orbit camera",            mx, hy, 12, hc); hy += 16;
-        DrawText("Middle-mouse drag  pan camera",              mx, hy, 12, hc); hy += 16;
-        DrawText("Scroll wheel       zoom",                    mx, hy, 12, hc);
+        // ---- Legend hint (anchored to bottom of panel) ----------------------
+        {
+            const Color hc2 = {130, 133, 158, 200};
+            int hy = H - 44;
+            DrawRectangle(mx - 4, hy - 6, cw + 8, 50, {28, 30, 40, 200});
+            DrawText("F1  Scene Legend    F2  Controls", mx, hy,      11, hc2);
+            DrawText("Toggle overlays on the 3D viewport", mx, hy + 16, 11, hc2);
+        }
 
         // ---- Deferred dropdown draws (on top of all other controls) ---------
         if (GuiDropdownBox({ (float)mx, (float)vf_dd_y, (float)cw, (float)rh },
