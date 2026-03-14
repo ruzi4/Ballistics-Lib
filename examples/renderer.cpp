@@ -23,9 +23,11 @@
 
 #include <ballistics/ballistics.hpp>
 #include <ballistics/math/math_constants.hpp>
+#include <nlohmann/json.hpp>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <fstream>
 #include <future>
 #include <string>
 #include <vector>
@@ -56,14 +58,18 @@ struct SolveResult {
     bool   has_intercept    = false;
     Vec3   intercept_point  = {};  // ballistics coords
     double lead_distance_m  = 0.0;
+    double slew_time_s      = 0.0; // estimated launcher slew time before shot (s)
     int    intercept_iters  = 0;
 };
 
 struct SolveParams {
     Vec3                  launcher_pos;
     Vec3                  target_pos;
-    Vec3                  target_velocity;  // m/s, ballistics coords; zero = stationary
+    Vec3                  target_velocity;        // m/s, ballistics coords; zero = stationary
     bool                  target_moving = false;
+    double                current_azimuth_deg   = 0.0;  // current physical launcher az
+    double                current_elevation_deg = 0.0;  // current physical launcher el
+    LauncherSlew          slew;                          // from launcher_config.json
     MunitionSpec          munition;
     AtmosphericConditions atmo;
     double                muzzle_speed;
@@ -107,13 +113,17 @@ static SolveResult solve_async(const SolveParams& p)
     Vec3         aim_pos  = p.target_pos; // position the trajectory ends at
 
     if (p.target_moving) {
-        // Iterative intercept solve: accounts for target velocity
-        InterceptSolution isol = solve_moving_target(
+        // Slew-aware intercept solve: accounts for target velocity AND the
+        // time the launcher takes to rotate to the firing angle.
+        InterceptSolution isol = solve_moving_target_slewed(
             sim,
             p.launcher_pos,
+            p.current_azimuth_deg,
+            p.current_elevation_deg,
             p.target_pos,
             p.target_velocity,
             p.muzzle_speed,
+            p.slew,
             /*high_angle=*/false,
             /*tolerance_m=*/0.5,
             /*max_iterations=*/10);
@@ -128,6 +138,7 @@ static SolveResult solve_async(const SolveParams& p)
         out.has_intercept   = true;
         out.intercept_point = isol.intercept_point;
         out.lead_distance_m = isol.lead_distance_m;
+        out.slew_time_s     = isol.slew_time_s;
         out.intercept_iters = isol.iterations;
     } else {
         // Standard static-target solve
@@ -295,12 +306,36 @@ int main()
     float target_origin_y     = ty;
     bool  prev_target_moving  = false;
 
+    // -----------------------------------------------------------------------
+    // Load launcher configuration (slew rates) from JSON
+    // -----------------------------------------------------------------------
+    LauncherSlew slew_cfg;   // defaults: 25 deg/s yaw and pitch
+    {
+        std::ifstream f("data/launcher_config.json");
+        if (f.is_open()) {
+            try {
+                auto j = nlohmann::json::parse(f);
+                if (j.contains("slew_rate_yaw_deg_per_s")   && j["slew_rate_yaw_deg_per_s"].is_number())
+                    slew_cfg.yaw_deg_per_s   = j["slew_rate_yaw_deg_per_s"].get<double>();
+                if (j.contains("slew_rate_pitch_deg_per_s") && j["slew_rate_pitch_deg_per_s"].is_number())
+                    slew_cfg.pitch_deg_per_s = j["slew_rate_pitch_deg_per_s"].get<double>();
+            } catch (...) { /* malformed JSON — keep defaults */ }
+        }
+    }
+
     int  mun_idx  = 1;    // 5.56×45 M855 as default
     float muzzle_speed = (float)lib.get(mun_names[(size_t)mun_idx]).muzzle_velocity_ms;
     bool dd_edit  = false;
 
     // Auto-update muzzle speed when munition changes
     int last_mun_for_speed = mun_idx;
+
+    // -----------------------------------------------------------------------
+    // Physical launcher orientation — smoothly slewed toward the fire solution
+    // -----------------------------------------------------------------------
+    // Initialised to point at the default target so the first frame looks sensible.
+    float phys_az = (float)(std::atan2((double)(tx - lx), (double)(ty - ly)) * kRadToDeg);
+    float phys_el = 0.f;
 
     // -----------------------------------------------------------------------
     // Async fire-solution state
@@ -462,6 +497,11 @@ int main()
             } else {
                 sp.target_velocity = { 0.0, 0.0, 0.0 };
             }
+            // Pass current physical launcher orientation so the slewed solver
+            // can compute how long it takes to rotate to the firing angle.
+            sp.current_azimuth_deg   = (double)phys_az;
+            sp.current_elevation_deg = (double)phys_el;
+            sp.slew                  = slew_cfg;
             sp.munition     = lib.get(mun_names[(size_t)mun_idx]);
             sp.atmo         = atmo;
             sp.muzzle_speed = (double)muzzle_speed;
@@ -474,6 +514,35 @@ int main()
                 current   = pending.get();
                 computing = false;
             }
+        }
+
+        // -------------------------------------------------------------------
+        // Slew physical launcher toward commanded fire-solution angles
+        // -------------------------------------------------------------------
+        {
+            // Commanded angles: use fire solution when valid, otherwise point
+            // at the target geometrically with zero elevation.
+            float cmd_az, cmd_el;
+            if (current.valid) {
+                cmd_az = (float)current.azimuth_deg;
+                cmd_el = (float)current.elevation_deg;
+            } else {
+                const double dx = tx - lx, dy = ty - ly;
+                cmd_az = (float)(std::atan2(dx, dy) * kRadToDeg);
+                cmd_el = 0.f;
+            }
+
+            // Maximum angular change this frame
+            const float max_daz = (float)slew_cfg.yaw_deg_per_s   * dt;
+            const float max_del = (float)slew_cfg.pitch_deg_per_s  * dt;
+
+            // Azimuth: shortest-path difference wrapped to [-180, 180]
+            float daz = std::fmod(cmd_az - phys_az + 540.f, 360.f) - 180.f;
+            phys_az   = std::fmod(phys_az + std::fmax(-max_daz, std::fmin(max_daz, daz)) + 360.f, 360.f);
+
+            // Elevation: simple clamped step
+            float del = cmd_el - phys_el;
+            phys_el  += std::fmax(-max_del, std::fmin(max_del, del));
         }
 
         // -------------------------------------------------------------------
@@ -524,18 +593,7 @@ int main()
             focus.z + cam_dist * cosf(el_r) * cosf(az_r)
         };
 
-        // -------------------------------------------------------------------
-        // Azimuth/elevation for launcher drawing
-        // Use computed solution when valid; fall back to geometric azimuth
-        // -------------------------------------------------------------------
-        float disp_az = 0.f, disp_el = 0.f;
-        if (current.valid) {
-            disp_az = (float)current.azimuth_deg;
-            disp_el = (float)current.elevation_deg;
-        } else {
-            const double dx = tx - lx, dy = ty - ly;
-            disp_az = (float)(std::atan2(dx, dy) * kRadToDeg);
-        }
+        // The launcher model always follows the physical (slewed) angles.
 
         // ===================================================================
         // RENDER
@@ -555,7 +613,7 @@ int main()
         DrawLine3D({ 0, 0.1f,  0  }, {  0, 0.1f, -25  }, GREEN);  // -z = North
         DrawLine3D({ 0, 0,     0  }, {  0, 25,     0  }, BLUE);   // +y = Up
 
-        draw_launcher(rl_l, disp_az, disp_el);
+        draw_launcher(rl_l, phys_az, phys_el);
         draw_target(rl_t);
 
         // Moving target: draw travel path
@@ -716,14 +774,34 @@ int main()
 
         if (current.valid) {
             const Color fc = { 75, 215, 100, 255 };
-            DrawText(TextFormat("Azimuth   : %7.2f deg", current.azimuth_deg),   mx, y, 14, fc); y += 20;
-            DrawText(TextFormat("Elevation : %7.2f deg", current.elevation_deg), mx, y, 14, fc); y += 20;
+
+            // Commanded (fire-solution) angles
+            DrawText(TextFormat("Cmd Az    : %7.2f deg", current.azimuth_deg),   mx, y, 14, fc); y += 20;
+            DrawText(TextFormat("Cmd El    : %7.2f deg", current.elevation_deg), mx, y, 14, fc); y += 20;
+
+            // Physical (slewed) angles — show in white; turn green when on-target
+            const float az_err = std::fabs(std::fmod(phys_az - (float)current.azimuth_deg + 540.f, 360.f) - 180.f);
+            const float el_err = std::fabs(phys_el - (float)current.elevation_deg);
+            const bool  on_az  = az_err < 0.5f;
+            const bool  on_el  = el_err < 0.5f;
+            const bool  ready  = on_az && on_el;
+            DrawText(TextFormat("Phys Az   : %7.2f deg", phys_az), mx, y, 14, on_az ? fc : LIGHTGRAY); y += 20;
+            DrawText(TextFormat("Phys El   : %7.2f deg", phys_el), mx, y, 14, on_el ? fc : LIGHTGRAY); y += 20;
+
+            // Ready-to-fire indicator
+            if (ready) {
+                DrawText("  ** READY TO FIRE **", mx, y, 14, { 0, 255, 80, 255 }); y += 20;
+            } else {
+                DrawText(TextFormat("  Slewing... Az%.1f El%.1f", az_err, el_err), mx, y, 13, YELLOW); y += 20;
+            }
+
             DrawText(TextFormat("Range     : %7.0f m",   current.range_m),       mx, y, 14, fc); y += 20;
             DrawText(TextFormat("Flight T  : %7.3f s",   current.flight_time_s), mx, y, 14, fc); y += 20;
+
             if (current.has_intercept) {
                 const Color lc = { 0, 220, 220, 255 };
-                DrawText(TextFormat("Lead dist : %7.1f m",   current.lead_distance_m),  mx, y, 14, lc); y += 20;
-                DrawText(TextFormat("Itr conv  : %7d",       current.intercept_iters),   mx, y, 14, lc); y += 20;
+                DrawText(TextFormat("Lead dist : %7.1f m", current.lead_distance_m), mx, y, 14, lc); y += 20;
+                DrawText(TextFormat("Slew time : %7.2f s", current.slew_time_s),     mx, y, 14, lc); y += 20;
             }
         } else if (computing) {
             DrawText("  Computing...", mx, y, 14, YELLOW); y += 20;

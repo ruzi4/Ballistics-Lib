@@ -1,0 +1,4 @@
+{
+  "slew_rate_yaw_deg_per_s":   25.0,
+  "slew_rate_pitch_deg_per_s": 25.0
+}

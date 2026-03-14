@@ -21,6 +21,15 @@ struct LauncherOrientation {
     double azimuth_deg{0.0};  ///< Horizontal bearing to target (degrees, 0=North, CW)
 };
 
+/// Physical slew (rotation) rates of the launcher mechanism.
+/// Used by solve_moving_target_slewed() to account for the time needed to
+/// rotate from the current orientation to the required firing angle before
+/// the shot can be released.
+struct LauncherSlew {
+    double yaw_deg_per_s{25.0};    ///< Azimuth (yaw) slew rate (deg/s)
+    double pitch_deg_per_s{25.0};  ///< Elevation (pitch) slew rate (deg/s)
+};
+
 /// Result returned by solve_elevation() and FireControlTable::lookup().
 struct FireSolution {
     /// Launch elevation angle above horizontal (degrees).
@@ -50,6 +59,11 @@ struct InterceptSolution {
     /// Horizontal distance between the current target position and the
     /// intercept point (i.e. how far ahead of the target we are aiming) (m).
     double lead_distance_m{0.0};
+
+    /// Estimated time for the launcher to slew from its current orientation
+    /// to the required firing angle (seconds).  Zero when returned by
+    /// solve_moving_target(); populated by solve_moving_target_slewed().
+    double slew_time_s{0.0};
 
     /// Number of fixed-point iterations used to converge.
     int iterations{0};
@@ -139,6 +153,56 @@ InterceptSolution solve_moving_target(
     double                     muzzle_speed_ms,
     bool                       high_angle    = false,
     double                     tolerance_m   = 0.5,
+    int                        max_iterations = 10);
+
+// ---------------------------------------------------------------------------
+// solve_moving_target_slewed — intercept accounting for launcher slew time
+// ---------------------------------------------------------------------------
+/// Slew-aware extension of solve_moving_target().
+///
+/// A physical launcher takes time to rotate from its current orientation to
+/// the required firing angle.  During that slew period the target continues
+/// to move, so the true intercept point is further ahead than a pure
+/// flight-time lead calculation would suggest.
+///
+/// ### Algorithm (outer fixed-point wrapping solve_moving_target)
+/// 1. Start with a slew-time estimate T_s = 0.
+/// 2. Forward-project the target by T_s to get the "fire point" — where the
+///    target will be at the moment the shot can be released.
+/// 3. Call solve_moving_target() from that fire point to compute the optimal
+///    intercept and obtain updated firing angles (az, el).
+/// 4. Recompute T_s = max(|Δaz| / yaw_rate, |Δel| / pitch_rate).
+/// 5. Repeat from step 2 until |ΔT_s| < 10 ms or @p max_iterations.
+///
+/// The result's @c slew_time_s field carries the converged slew estimate.
+/// The @c intercept_point is the target's predicted position at the moment
+/// of impact (fire point + flight-time lead).
+///
+/// @note  Cost: (max_iterations + 1) × solve_moving_target() calls.
+///        Intended for background-thread use alongside the main render loop.
+///
+/// @param sim                   Simulator (munition + atmosphere).
+/// @param launcher_pos          World-space launcher position (m).
+/// @param current_azimuth_deg   Current physical azimuth of the launcher (deg).
+/// @param current_elevation_deg Current physical elevation of the launcher (deg).
+/// @param target_pos            Current target position (m).
+/// @param target_velocity       Target velocity (m/s, x=East, y=North, z=Up).
+/// @param muzzle_speed_ms       Muzzle velocity (m/s).
+/// @param slew                  Launcher yaw/pitch slew rates.
+/// @param high_angle            false = direct fire, true = plunging fire.
+/// @param tolerance_m           Inner solve_elevation() convergence threshold (m).
+/// @param max_iterations        Outer fixed-point iteration limit.
+InterceptSolution solve_moving_target_slewed(
+    const TrajectorySimulator& sim,
+    const Vec3&                launcher_pos,
+    double                     current_azimuth_deg,
+    double                     current_elevation_deg,
+    const Vec3&                target_pos,
+    const Vec3&                target_velocity,
+    double                     muzzle_speed_ms,
+    const LauncherSlew&        slew,
+    bool                       high_angle     = false,
+    double                     tolerance_m    = 0.5,
     int                        max_iterations = 10);
 
 // ---------------------------------------------------------------------------

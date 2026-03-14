@@ -347,6 +347,84 @@ InterceptSolution solve_moving_target(
 }
 
 // ---------------------------------------------------------------------------
+// solve_moving_target_slewed
+// ---------------------------------------------------------------------------
+// Outer fixed-point wrapping solve_moving_target().
+//
+// A physical launcher cannot snap instantly to a new firing angle; it must
+// slew (rotate) at its rated speed.  During that slew the target keeps
+// moving, so the effective fire point is target_pos + target_vel * T_slew.
+// The required T_slew itself depends on the firing angle, which depends on
+// the intercept computed from the fire point — a fixed-point problem.
+//
+// Convergence is fast (≤ 5 iterations) for typical tactical scenarios.
+// ---------------------------------------------------------------------------
+
+InterceptSolution solve_moving_target_slewed(
+    const TrajectorySimulator& sim,
+    const Vec3&                launcher_pos,
+    double                     current_azimuth_deg,
+    double                     current_elevation_deg,
+    const Vec3&                target_pos,
+    const Vec3&                target_velocity,
+    double                     muzzle_speed_ms,
+    const LauncherSlew&        slew,
+    bool                       high_angle,
+    double                     tolerance_m,
+    int                        max_iterations)
+{
+    if (muzzle_speed_ms <= 0.0)
+        throw std::invalid_argument("muzzle_speed_ms must be positive");
+
+    // Compute the shortest angular distance between two azimuths [0, 180].
+    auto az_delta = [](double a, double b) -> double {
+        double d = std::abs(a - b);
+        return (d > 180.0) ? 360.0 - d : d;
+    };
+
+    // Time for the launcher to slew from current orientation to (target_az, target_el).
+    auto slew_time_for = [&](double target_az, double target_el) -> double {
+        const double t_yaw   = (slew.yaw_deg_per_s   > 0.0)
+            ? az_delta(current_azimuth_deg,   target_az)                  / slew.yaw_deg_per_s
+            : 0.0;
+        const double t_pitch = (slew.pitch_deg_per_s > 0.0)
+            ? std::abs(current_elevation_deg - target_el) / slew.pitch_deg_per_s
+            : 0.0;
+        return std::max(t_yaw, t_pitch);
+    };
+
+    double           ts   = 0.0;   // current slew-time estimate (seconds)
+    InterceptSolution best;
+
+    for (int iter = 0; iter <= max_iterations; ++iter) {
+        // Project target to where it will be when the launcher finishes slewing.
+        const Vec3 fire_pos = {
+            target_pos.x + target_velocity.x * ts,
+            target_pos.y + target_velocity.y * ts,
+            target_pos.z + target_velocity.z * ts
+        };
+
+        // Solve intercept from that deferred fire position.
+        InterceptSolution isol = solve_moving_target(
+            sim, launcher_pos, fire_pos, target_velocity,
+            muzzle_speed_ms, high_angle, tolerance_m, max_iterations);
+
+        if (!isol.valid) return {};
+
+        // Update slew estimate from the newly computed firing angles.
+        const double ts_new = slew_time_for(isol.azimuth_deg,
+                                             isol.fire.elevation_deg);
+        isol.slew_time_s = ts_new;
+        best = isol;
+
+        if (std::abs(ts_new - ts) < 0.01) break;  // converged (10 ms threshold)
+        ts = ts_new;
+    }
+
+    return best;
+}
+
+// ---------------------------------------------------------------------------
 // FireControlTable::build
 // ---------------------------------------------------------------------------
 // Strategy: sweep num_samples elevation angles across the full search range,
