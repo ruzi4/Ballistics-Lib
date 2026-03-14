@@ -18,19 +18,10 @@ namespace {
 // target_z_m is the absolute altitude of the target plane.
 // The projectile starts at absolute altitude (target_z_m + launch_height_m).
 //
-// Two detection modes depending on launcher/target geometry:
-//
-//   launcher >= target  (launch_height_m >= 0):
-//     Standard descending detection — simulation stops when the projectile
-//     descends through target_z_m.  This is the normal artillery/sniper case.
-//
-//   launcher < target   (launch_height_m < 0):
-//     Ascending detection — the projectile starts below target_z_m and must
-//     cross it going upward.  The simulation callback records the first
-//     ascending crossing and stops early.  This is the only physically
-//     reachable solution at typical engagement ranges when the target is
-//     above the launcher (the descending crossing occurs at ranges far
-//     exceeding any practical engagement distance).
+// Detection: always uses descending crossing of target_z_m.  When the
+// launcher is below the target the projectile must arc above target_z_m
+// before descending through it (plunging fire); shallow elevations that
+// never reach target_z_m return {0, 0}.
 // ---------------------------------------------------------------------------
 struct ShotResult { double range_m; double time_s; };
 
@@ -59,66 +50,25 @@ ShotResult shoot(
     cfg.dt       = sim_dt;
     cfg.max_time = 60.0;   // 1-minute ceiling; enough for any munition at max elevation
     cfg.use_rk4  = true;
+    cfg.ground_z = target_z_m;
 
-    // -----------------------------------------------------------------------
-    // Launcher at or above target: standard descending detection
-    // -----------------------------------------------------------------------
-    if (launch_z >= target_z_m) {
-        cfg.ground_z = target_z_m;
-
-        ProjectileState last = st;
-        sim.simulate(st, cfg, [&last](const ProjectileState& s) {
-            last = s;
-            return true;
-        });
-
-        // A valid impact clamps last.position.z exactly to target_z_m.
-        // If it differs by more than 1 m the projectile never crossed the
-        // target plane (simulation timed out or elevation was too shallow).
-        if (std::abs(last.position.z - target_z_m) > 1.0)
-            return {0.0, 0.0};
-
-        const double h_range = std::sqrt(last.position.x * last.position.x
-                                       + last.position.y * last.position.y);
-        return {h_range, last.time};
-    }
-
-    // -----------------------------------------------------------------------
-    // Launcher below target: detect ascending crossing of target_z_m
-    // -----------------------------------------------------------------------
-    // Set the simulation floor below the launcher so simulate() does not
-    // terminate early via the ground_z check.
-    cfg.ground_z = launch_z - 1.0;
-
-    ProjectileState prev   = st;
-    ProjectileState impact = st;
-    bool            found  = false;
-
-    sim.simulate(st, cfg, [&](const ProjectileState& s) {
-        // Ascending crossing: prev was below target altitude, s is at/above it.
-        if (prev.position.z < target_z_m && s.position.z >= target_z_m) {
-            const double dz   = s.position.z - prev.position.z;
-            const double frac = (dz > 0.0) ? (target_z_m - prev.position.z) / dz : 0.0;
-            impact.position.x = prev.position.x + frac * (s.position.x - prev.position.x);
-            impact.position.y = prev.position.y + frac * (s.position.y - prev.position.y);
-            impact.position.z = target_z_m;
-            impact.time       = prev.time + frac * (s.time - prev.time);
-            found = true;
-            return false; // stop simulation early
-        }
-        // Abort as soon as the projectile starts falling back below target
-        // altitude — it will never cross target_z_m going up again.
-        if (s.position.z < target_z_m && s.velocity.z < 0.0)
-            return false;
-        prev = s;
+    ProjectileState last = st;
+    sim.simulate(st, cfg, [&last](const ProjectileState& s) {
+        last = s;
         return true;
     });
 
-    if (!found) return {0.0, 0.0};
+    // A valid impact clamps last.position.z exactly to target_z_m.
+    // If it differs by more than 1 m the projectile never crossed the
+    // target plane on the descending path (simulation timed out, elevation
+    // was too shallow, or — for launcher-below-target — the projectile
+    // never arced above target_z_m).
+    if (std::abs(last.position.z - target_z_m) > 1.0)
+        return {0.0, 0.0};
 
-    const double h_range = std::sqrt(impact.position.x * impact.position.x
-                                   + impact.position.y * impact.position.y);
-    return {h_range, impact.time};
+    const double h_range = std::sqrt(last.position.x * last.position.x
+                                   + last.position.y * last.position.y);
+    return {h_range, last.time};
 }
 
 // ---------------------------------------------------------------------------
@@ -181,13 +131,7 @@ FireSolution solve_elevation(
 
     const double az = orientation.azimuth_deg;
 
-    // When the launcher is below the target the only reachable solutions are
-    // ascending crossings of the target plane.  The ascending-crossing range
-    // decreases monotonically with elevation above theta_max — identical
-    // monotonicity to the high-angle descending case.  Override the search
-    // mode so the bracket and bisection direction are correct automatically.
-    const bool ascending_mode   = (launch_height_m < 0.0);
-    const bool effective_hi_ang = high_angle || ascending_mode;
+    const bool effective_hi_ang = high_angle;
 
     auto [theta_max, r_max] =
         find_max_range_angle(sim, az, muzzle_speed_ms, launch_height_m,
@@ -459,11 +403,7 @@ void FireControlTable::build(
     // Use a coarser dt during the sweep — accurate enough for table use
     constexpr double kBuildDt = 1.0 / 120.0;
 
-    // When the launcher is below the target, ascending-crossing ranges decrease
-    // with elevation (same monotonicity as high-angle descending fire).
-    // Use the high-angle sweep bounds and monotone filter automatically.
-    const bool ascending_mode   = (launch_height_m < 0.0);
-    const bool effective_hi_ang = high_angle || ascending_mode;
+    const bool effective_hi_ang = high_angle;
 
     // --- Step 1: quick ternary search for theta_max (20 iterations = 40 sims) ---
     // This concentrates all num_samples in the relevant half of the angle range,
