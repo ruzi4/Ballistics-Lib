@@ -5,3 +5,7 @@ build-*/
 *.a
 *.so
 *.dylib
+
+# RAG generated files
+rag/rag_db/
+rag/__pycache__/
