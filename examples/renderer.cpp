@@ -18,6 +18,7 @@
 
 #include "raylib.h"
 #include "raymath.h"
+#include "rlgl.h"
 #define RAYGUI_IMPLEMENTATION
 #include "raygui.h"
 
@@ -40,6 +41,40 @@ using namespace ballistics;
 static inline Vector3 to_rl(const Vec3& v)
 {
     return { (float)v.x, (float)v.z, -(float)v.y };
+}
+
+// ---------------------------------------------------------------------------
+// begin_mode3d_ex — BeginMode3D replacement with configurable clip planes
+// ---------------------------------------------------------------------------
+// raylib's BeginMode3D() uses compile-time constants RL_CULL_DISTANCE_NEAR
+// (0.01 m) and RL_CULL_DISTANCE_FAR (1000 m) baked into the library binary,
+// making it impossible to extend the far plane via macros at the call site.
+// This function replicates BeginMode3D's rlgl calls with caller-supplied
+// near/far values and uses the actual scissored viewport aspect ratio so the
+// 3D view is undistorted even though it shares the window with the GUI panel.
+// Call EndMode3D() normally after use — it only pops the matrix stack.
+static void begin_mode3d_ex(Camera3D cam,
+                             float near_z, float far_z,
+                             int vp_w,    int vp_h)
+{
+    rlDrawRenderBatchElement();   // flush any pending 2D batch
+
+    rlMatrixMode(RL_PROJECTION);
+    rlPushMatrix();
+    rlLoadIdentity();
+
+    const float aspect = (vp_h > 0) ? (float)vp_w / (float)vp_h : 1.f;
+    const double top   = (double)near_z * tan(cam.fovy * 0.5 * DEG2RAD);
+    const double right = top * aspect;
+    rlFrustum(-right, right, -top, top, (double)near_z, (double)far_z);
+
+    rlMatrixMode(RL_MODELVIEW);
+    rlLoadIdentity();
+
+    Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
+    rlMultMatrixf(MatrixToFloat(view));
+
+    rlEnableDepthTest();
 }
 
 // ---------------------------------------------------------------------------
@@ -197,12 +232,13 @@ static SolveResult solve_async(const SolveParams& p)
 
 // ---------------------------------------------------------------------------
 // Draw launcher: box body + rotating barrel cylinder + muzzle direction line
+// scale > 1 keeps the model visible when the camera is far away.
 // ---------------------------------------------------------------------------
-static void draw_launcher(Vector3 pos, float az_deg, float el_deg)
+static void draw_launcher(Vector3 pos, float az_deg, float el_deg, float scale = 1.f)
 {
     // Body
-    DrawCube     (pos, 3.0f, 1.2f, 2.0f, { 55, 115, 55, 255 });
-    DrawCubeWires(pos, 3.0f, 1.2f, 2.0f, {  0,  70,  0, 255 });
+    DrawCube     (pos, 3.0f * scale, 1.2f * scale, 2.0f * scale, { 55, 115, 55, 255 });
+    DrawCubeWires(pos, 3.0f * scale, 1.2f * scale, 2.0f * scale, {  0,  70,  0, 255 });
 
     // Firing direction in raylib coords:
     //   az=0   → -z (North),  az=90 → +x (East)
@@ -216,30 +252,30 @@ static void draw_launcher(Vector3 pos, float az_deg, float el_deg)
     };
 
     // Barrel (cylinder from top-center of box outward)
-    Vector3 barrel_base = { pos.x, pos.y + 0.6f, pos.z };
-    Vector3 barrel_tip  = Vector3Add(barrel_base, Vector3Scale(dir, 3.5f));
-    DrawCylinderEx     (barrel_base, barrel_tip, 0.14f, 0.11f, 10, { 100, 100, 100, 255 });
-    DrawCylinderWiresEx(barrel_base, barrel_tip, 0.14f, 0.11f, 10, {  55,  55,  55, 255 });
+    Vector3 barrel_base = { pos.x, pos.y + 0.6f * scale, pos.z };
+    Vector3 barrel_tip  = Vector3Add(barrel_base, Vector3Scale(dir, 3.5f * scale));
+    DrawCylinderEx     (barrel_base, barrel_tip, 0.14f * scale, 0.11f * scale, 10, { 100, 100, 100, 255 });
+    DrawCylinderWiresEx(barrel_base, barrel_tip, 0.14f * scale, 0.11f * scale, 10, {  55,  55,  55, 255 });
 
     // Muzzle direction line (red ray extending from barrel tip)
-    Vector3 muzzle_end = Vector3Add(barrel_tip, Vector3Scale(dir, 5.0f));
+    Vector3 muzzle_end = Vector3Add(barrel_tip, Vector3Scale(dir, 5.0f * scale));
     DrawLine3D(barrel_tip, muzzle_end, RED);
 }
 
 // ---------------------------------------------------------------------------
 // Draw target: sphere + vertical stake + ground crosshair
 // ---------------------------------------------------------------------------
-static void draw_target(Vector3 pos)
+static void draw_target(Vector3 pos, float scale = 1.f)
 {
-    DrawSphere     (pos, 0.6f, { 220, 50, 50, 255 });
-    DrawSphereWires(pos, 0.6f, 8, 8, { 150, 20, 20, 255 });
+    DrawSphere     (pos, 0.6f * scale, { 220, 50, 50, 255 });
+    DrawSphereWires(pos, 0.6f * scale, 8, 8, { 150, 20, 20, 255 });
 
     // Vertical stake to ground plane
     Vector3 ground = { pos.x, 0.02f, pos.z };
     DrawLine3D(ground, pos, { 200, 80, 80, 180 });
 
     // Crosshair on ground
-    const float arm = 2.0f;
+    const float arm = 2.0f * scale;
     const float gy  = 0.03f;
     DrawLine3D({ pos.x - arm, gy, pos.z        }, { pos.x + arm, gy, pos.z        }, { 220, 80, 80, 255 });
     DrawLine3D({ pos.x,       gy, pos.z - arm  }, { pos.x,       gy, pos.z + arm  }, { 220, 80, 80, 255 });
@@ -248,7 +284,7 @@ static void draw_target(Vector3 pos)
 // ---------------------------------------------------------------------------
 // Draw trajectory arc + apex marker
 // ---------------------------------------------------------------------------
-static void draw_trajectory(const std::vector<Vector3>& pts)
+static void draw_trajectory(const std::vector<Vector3>& pts, float scale = 1.f)
 {
     if (pts.size() < 2) return;
 
@@ -262,7 +298,7 @@ static void draw_trajectory(const std::vector<Vector3>& pts)
 
     // Apex marker
     if (apex > 0 && apex < pts.size() - 1)
-        DrawSphere(pts[apex], 0.4f, YELLOW);
+        DrawSphere(pts[apex], 0.4f * scale, YELLOW);
 }
 
 // ---------------------------------------------------------------------------
@@ -408,7 +444,9 @@ int main()
         // Keyboard controls (disabled while dropdown is open)
         // -------------------------------------------------------------------
         if (!dd_edit && !vf_dd_edit) {
-            const float spd = 80.f * dt;   // m/s movement speed
+            // Movement speed scales with camera distance so the scene is still
+            // navigable whether the camera is 50 m or 10 km away.
+            const float spd = std::max(80.f, cam_dist * 0.15f) * dt;
             // Target movement (disabled when moving target is active)
             if (!target_moving) {
                 if (IsKeyDown(KEY_W)) ty += spd;
@@ -565,7 +603,7 @@ int main()
                 pan_z += (d.x * sinf(az_r_cam) - d.y * cosf(az_r_cam) * sinf(cam_el * DEG2RAD)) * scale;
             }
             cam_dist -= GetMouseWheelMove() * cam_dist * 0.08f;
-            cam_dist  = Clamp(cam_dist, 5.f, 8000.f);
+            cam_dist  = Clamp(cam_dist, 5.f, 20000.f);
         }
 
         // Reset pan when switching to a snap mode
@@ -604,17 +642,36 @@ int main()
         ClearBackground({ 20, 23, 34, 255 });
 
         BeginScissorMode(PANEL_W, 0, W - PANEL_W, H);
-        BeginMode3D(camera);
+        // Use extended far-clip (50 km) so objects at 5 km range are not culled.
+        begin_mode3d_ex(camera, 0.5f, 50000.f, W - PANEL_W, H);
 
-        DrawGrid(800, 10.0f);   // 8 km × 8 km, 10 m cells
+        // Adaptive grid: cell size and count scale with camera distance so the
+        // grid always covers the scene without becoming too dense or too sparse.
+        {
+            float cell = 10.f;
+            if (cam_dist > 5000.f) cell = 500.f;
+            else if (cam_dist > 2000.f) cell = 200.f;
+            else if (cam_dist > 800.f)  cell = 50.f;
+            else if (cam_dist > 300.f)  cell = 20.f;
+            // Always draw at least 500 cells so the grid extends far enough.
+            int slices = (int)std::ceil(cam_dist * 2.f / cell);
+            slices = std::max(slices, 200);
+            DrawGrid(slices, cell);
+        }
 
-        // Axis arrows at world origin
-        DrawLine3D({ 0, 0.1f,  0  }, { 25, 0.1f,   0  }, RED);    // +x = East
-        DrawLine3D({ 0, 0.1f,  0  }, {  0, 0.1f, -25  }, GREEN);  // -z = North
-        DrawLine3D({ 0, 0,     0  }, {  0, 25,     0  }, BLUE);   // +y = Up
+        // Axis arrows — length scales with camera distance so they stay visible.
+        const float ax_len = std::max(25.f, cam_dist * 0.05f);
+        DrawLine3D({ 0, 0.1f,  0       }, { ax_len, 0.1f,  0       }, RED);    // +x = East
+        DrawLine3D({ 0, 0.1f,  0       }, { 0,      0.1f, -ax_len  }, GREEN);  // -z = North
+        DrawLine3D({ 0, 0,     0       }, { 0,      ax_len, 0       }, BLUE);   // +y = Up
 
-        draw_launcher(rl_l, phys_az, phys_el);
-        draw_target(rl_t);
+        // Per-object scale: keep markers visible proportional to camera distance.
+        const float launcher_scale = std::max(1.f, Vector3Distance(camera.position, rl_l) / 200.f);
+        const float target_scale   = std::max(1.f, Vector3Distance(camera.position, rl_t) / 200.f);
+        const float traj_scale     = std::max(1.f, cam_dist / 200.f);
+
+        draw_launcher(rl_l, phys_az, phys_el, launcher_scale);
+        draw_target(rl_t, target_scale);
 
         // Moving target: draw travel path
         if (target_moving && target_travel_dist > 0.f) {
@@ -630,23 +687,24 @@ int main()
             rl_ps.y = 0.05f;
             rl_pe.y = 0.05f;
             DrawLine3D(rl_ps, rl_pe, { 255, 100, 100, 200 });
-            DrawSphere({ rl_ps.x, 0.1f, rl_ps.z }, 0.4f, { 200, 200, 50, 200 });
-            DrawSphere({ rl_pe.x, 0.1f, rl_pe.z }, 0.4f, { 200, 200, 50, 200 });
+            DrawSphere({ rl_ps.x, 0.1f, rl_ps.z }, 0.4f * traj_scale, { 200, 200, 50, 200 });
+            DrawSphere({ rl_pe.x, 0.1f, rl_pe.z }, 0.4f * traj_scale, { 200, 200, 50, 200 });
         }
 
         if (current.valid && !current.traj.empty()) {
-            draw_trajectory(current.traj);
+            draw_trajectory(current.traj, traj_scale);
             // Impact marker at trajectory end
-            DrawSphere(current.traj.back(), 0.55f, { 255, 200, 0, 255 });
+            DrawSphere(current.traj.back(), 0.55f * traj_scale, { 255, 200, 0, 255 });
         }
 
         // Moving-target intercept: draw predicted intercept point + lead vector
         if (current.valid && current.has_intercept) {
             Vector3 rl_ipt = to_rl(current.intercept_point);
+            const float ipt_scale = std::max(1.f, Vector3Distance(camera.position, rl_ipt) / 200.f);
 
             // Cyan sphere at predicted intercept position
-            DrawSphere(rl_ipt, 0.8f, { 0, 220, 220, 220 });
-            DrawSphereWires(rl_ipt, 0.8f, 8, 8, { 0, 160, 160, 255 });
+            DrawSphere(rl_ipt, 0.8f * ipt_scale, { 0, 220, 220, 220 });
+            DrawSphereWires(rl_ipt, 0.8f * ipt_scale, 8, 8, { 0, 160, 160, 255 });
 
             // Vertical dashed stake from ground to intercept sphere
             Vector3 ipt_ground = { rl_ipt.x, 0.04f, rl_ipt.z };
@@ -660,10 +718,10 @@ int main()
 
         EndMode3D();
 
-        // Axis labels (screen-space, projected from 3D points)
-        Vector2 scr_e = GetWorldToScreen({ 25, 0.1f,   0  }, camera);
-        Vector2 scr_n = GetWorldToScreen({  0, 0.1f, -25  }, camera);
-        Vector2 scr_u = GetWorldToScreen({  0, 25,     0  }, camera);
+        // Axis labels (screen-space, projected from 3D points at arrow tips)
+        Vector2 scr_e = GetWorldToScreen({ ax_len, 0.1f,  0      }, camera);
+        Vector2 scr_n = GetWorldToScreen({ 0,      0.1f, -ax_len }, camera);
+        Vector2 scr_u = GetWorldToScreen({ 0,      ax_len, 0     }, camera);
         DrawText("E",  (int)scr_e.x + 3, (int)scr_e.y - 8,  15, RED);
         DrawText("N",  (int)scr_n.x + 3, (int)scr_n.y - 8,  15, GREEN);
         DrawText("Up", (int)scr_u.x + 3, (int)scr_u.y - 8,  15, BLUE);
@@ -704,19 +762,19 @@ int main()
 
         DrawText("X(E)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
-                     nullptr, nullptr, &lx, -2000.f, 2000.f);
+                     nullptr, nullptr, &lx, -5000.f, 5000.f);
         DrawText(TextFormat("%+.0f", lx), mx + cw - 62, y + 6, 13, val_col);
         y += rh + 3;
 
         DrawText("Y(N)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
-                     nullptr, nullptr, &ly, -2000.f, 2000.f);
+                     nullptr, nullptr, &ly, -5000.f, 5000.f);
         DrawText(TextFormat("%+.0f", ly), mx + cw - 62, y + 6, 13, val_col);
         y += rh + 3;
 
         DrawText("Alt", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
-                     nullptr, nullptr, &lz, 0.f, 200.f);
+                     nullptr, nullptr, &lz, 0.f, 2000.f);
         DrawText(TextFormat("%.1f", lz), mx + cw - 62, y + 6, 13, val_col);
         y += rh + 14;
 
@@ -727,19 +785,19 @@ int main()
 
         DrawText("X(E)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
-                     nullptr, nullptr, &tx, -2000.f, 2000.f);
+                     nullptr, nullptr, &tx, -5000.f, 5000.f);
         DrawText(TextFormat("%+.0f", tx), mx + cw - 62, y + 6, 13, val_col);
         y += rh + 3;
 
         DrawText("Y(N)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
-                     nullptr, nullptr, &ty, -2000.f, 2000.f);
+                     nullptr, nullptr, &ty, -5000.f, 5000.f);
         DrawText(TextFormat("%+.0f", ty), mx + cw - 62, y + 6, 13, val_col);
         y += rh + 3;
 
         DrawText("Alt", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({ (float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh },
-                     nullptr, nullptr, &tz, 0.f, 500.f);
+                     nullptr, nullptr, &tz, 0.f, 2000.f);
         DrawText(TextFormat("%.1f", tz), mx + cw - 62, y + 6, 13, val_col);
         y += rh + 10;
 
@@ -765,7 +823,7 @@ int main()
 
         DrawText("Distance (m)", mx, y + 6, 12, ctrl_col);
         GuiSliderBar({ (float)mx, (float)(y + 18), (float)(cw - 68), (float)rh },
-                     nullptr, nullptr, &target_travel_dist, 10.f, 2000.f);
+                     nullptr, nullptr, &target_travel_dist, 10.f, 5000.f);
         DrawText(TextFormat("%.0f", target_travel_dist), mx + cw - 62, y + 24, 14, val_col);
         y += rh + 26;
 
