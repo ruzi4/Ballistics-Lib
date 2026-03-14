@@ -15,11 +15,13 @@ can be loaded with `MunitionLibrary::load()`.
   "mass_kg":             "number  — projectile mass (kg)",
   "density_kg_m3":       "number  — material density (kg/m³)",
   "reference_area_m2":   "number  — cross-sectional reference area (m²)",
-  "drag_coefficient":    "number  — dimensionless Cd",
+  "drag_coefficient":    "number  — dimensionless Cd (0.0 = vacuum / no drag)",
   "muzzle_velocity_ms":  "number  — muzzle velocity (m/s)",
   "diameter_m":          "number  — characteristic diameter (m), optional"
 }
 ```
+
+The top-level object must have a `"munitions"` key containing the array.
 
 ### Included munitions
 
@@ -35,4 +37,20 @@ can be loaded with `MunitionLibrary::load()`.
 
 Append additional objects to the JSON array and pass the file path to
 `MunitionLibrary::load()`. Multiple files can be loaded into the same library
-instance; entries are merged by name.
+instance; entries are merged by name. A missing required field throws
+`std::invalid_argument`; a file that cannot be opened or parsed throws
+`std::runtime_error`.
+
+---
+
+## `launcher_config.json`
+
+Configuration for the interactive 3D renderer's launcher slew rates, used by
+`solve_moving_target_slewed` when computing intercept solutions for moving targets.
+
+| Field | Value | Description |
+|---|---|---|
+| `slew_rate_yaw_deg_per_s` | 25.0 | Maximum yaw (azimuth) rotation speed |
+| `slew_rate_pitch_deg_per_s` | 25.0 | Maximum pitch (elevation) rotation speed |
+
+These values are loaded into a `LauncherSlew` struct at renderer startup.

@@ -64,9 +64,9 @@ A dropdown lists every munition loaded from `data/munitions.json`:
 |---|---|---|
 | 0 | 9mm\_fmj\_115gr | 370 m/s |
 | 1 | 5.56×45 M855 62gr | 930 m/s |
-| 2 | 7.62×51 M80 147gr | 840 m/s |
-| 3 | .338 Lapua 250gr | 915 m/s |
-| 4 | .50 BMG 660gr | 930 m/s |
+| 2 | 7.62×51 M80 147gr | 853 m/s |
+| 3 | .338 Lapua 250gr | 905 m/s |
+| 4 | .50 BMG 660gr | 928 m/s |
 
 Switching munition automatically resets the muzzle speed to the default for
 that round.
@@ -179,11 +179,16 @@ Switching from Free to Launcher or Target resets the pan offset.
 
 ## Physics Notes
 
-- The solver calls `solve_elevation` from the ballistics library, which uses
-  a ternary-search + bisection algorithm and runs 120–180 full trajectory
-  simulations per call.
-- Drag, gravity, and ISA sea-level atmosphere are all applied; wind is zero
-  by default.
-- The trajectory arc is collected at 60 Hz integration (RK4) and converted to
-  the scene's coordinate space for rendering.
-- Elevated targets (target altitude > launcher altitude) are fully supported.
+- **Static target**: the solver calls `solve_elevation`, which uses ternary-search
+  + bisection and runs 120–180 full trajectory simulations per call (5–100 ms).
+- **Moving target**: the solver calls `solve_moving_target_slewed`, which wraps
+  `solve_moving_target` in an outer fixed-point loop that accounts for the time
+  the launcher takes to physically rotate to the firing angle. Slew rates are
+  loaded from `data/launcher_config.json` (25°/s for both yaw and pitch).
+- Drag, gravity, and ISA sea-level atmosphere are applied; wind is zero by default.
+- The trajectory arc is collected at 60 Hz integration (RK4) and converted to the
+  scene's coordinate space for rendering.
+- Elevated targets and launchers are fully supported; `launch_height_m` and
+  `target_altitude_m` are derived from the GUI position sliders.
+- The solver runs on a background thread so the renderer stays responsive
+  during computation.

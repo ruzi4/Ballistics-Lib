@@ -11,15 +11,22 @@ interactive applications.
   projectiles are feasible at 60 Hz.
 - **Fire-control solver** — `solve_elevation` finds the required launch angle for a
   given range using ternary-search + bisection over full trajectory simulations.
+  Supports non-zero launch height and target altitude for terrain-aware solutions.
+- **Moving-target intercept** — `solve_moving_target` computes the azimuth and
+  elevation to intercept a moving target using iterative flight-time lead
+  prediction. `solve_moving_target_slewed` extends this by accounting for the
+  time a physical launcher takes to slew to the firing angle.
 - **Pre-computed range tables** — `FireControlTable` sweeps elevation angles once
   (~50 – 300 ms, suitable for a background thread) and serves per-frame lookups in
   under 1 µs via binary search with linear interpolation.
 - **ISA atmosphere model** — International Standard Atmosphere from sea level to
-  20 km; moist-air density correction via the Magnus formula.
+  20 km; moist-air density correction via the Magnus formula. Altitude-varying
+  density can be applied per-step via a callback.
 - **Munition library** — load projectile specifications from JSON; includes five
   real-world reference rounds out of the box.
 - **Interactive renderer** — a standalone 3D visualisation application (raylib +
-  raygui) that draws the launcher, target, and trajectory arc in real time.
+  raygui) that draws the launcher, target, and trajectory arc in real time,
+  including slew-aware moving-target intercept.
 
 ## Coordinate convention
 
@@ -107,7 +114,7 @@ if (sol.valid)
 |---|---|
 | [`include/`](include/README.md) | Public C++17 headers — the full API surface |
 | [`src/`](src/README.md) | Library implementation files |
-| [`tests/`](tests/README.md) | 24 unit and performance tests |
+| [`tests/`](tests/README.md) | Comprehensive unit and performance tests |
 | [`data/`](data/README.md) | `munitions.json` — five reference projectile specs |
 | [`examples/`](examples/README.md) | Runnable demos and the 3D renderer |
 
@@ -117,8 +124,9 @@ if (sol.valid)
 |---|---|
 | `TrajectorySimulator::step()` (RK4) | ~200 ns |
 | `solve_elevation()` | 5 – 100 ms (120 – 180 simulations) |
+| `solve_moving_target()` | (max_iterations + 1) × `solve_elevation()` |
 | `FireControlTable::build()` | 50 – 300 ms (async-friendly) |
-| `FireControlTable::lookup()` | < 1 µs |
+| `FireControlTable::lookup()` | < 1 µs (O(log N) binary search) |
 
 ---
 
@@ -162,8 +170,11 @@ Full options:
 
 ```
 python main.py index [--repo ..] [--db ./rag_db]
-python main.py query [--results N] [--db ./rag_db] "<question>"
+python main.py query [--results N] [--db ./rag_db] [--retrieve-only] "<question>"
 ```
+
+Use `--retrieve-only` to print the retrieved source chunks without calling Claude
+(no `ANTHROPIC_API_KEY` required — useful for verifying the index).
 
 ---
 
