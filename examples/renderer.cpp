@@ -402,6 +402,10 @@ int main()
     int  prev_focus_mode = 0;
     bool vf_dd_edit      = false;
 
+    // Legend overlay visibility
+    bool show_scene_legend = true;
+    bool show_help_legend  = false;
+
     Camera3D camera = {};
     camera.up         = { 0, 1, 0 };
     camera.fovy       = 45.f;
@@ -731,6 +735,101 @@ int main()
 
         EndScissorMode();
 
+        // ---- Legend toggle buttons (top-right corner of 3D viewport) --------
+        GuiToggle({ (float)(W - 138), 8.f, 62.f, 22.f }, "Scene", &show_scene_legend);
+        GuiToggle({ (float)(W - 72),  8.f, 62.f, 22.f }, "Help",  &show_help_legend);
+
+        // ---- Scene legend overlay -------------------------------------------
+        if (show_scene_legend) {
+            const int slx = W - 215;
+            const int sly0 = 36;
+            const int slw  = 207;
+            const int slrh = 18;   // row height
+            const int slp  = 8;    // left padding inside box
+            // 1 title row + 9 data rows; top+bottom padding = 8px each
+            const int slh  = 8 + 10 * slrh + 8;
+            int sly = sly0 + 8;
+
+            DrawRectangleRounded({ (float)slx, (float)sly0, (float)slw, (float)slh },
+                                   0.08f, 8, { 20, 22, 30, 215 });
+            DrawRectangleRoundedLines({ (float)slx, (float)sly0, (float)slw, (float)slh },
+                                         0.08f, 8, 1.0f, { 65, 70, 95, 200 });
+
+            DrawText("SCENE LEGEND", slx + slp, sly + 2, 11, { 150, 155, 180, 255 }); sly += slrh;
+
+            // Helper: draw one labeled row with a colored rectangle swatch
+            auto sl_rect = [&](Color c, const char* label) {
+                DrawRectangle(slx + slp, sly + 4, 10, 10, c);
+                DrawText(label, slx + slp + 18, sly + 2, 11, LIGHTGRAY);
+                sly += slrh;
+            };
+            // Helper: draw one labeled row with a colored circle swatch
+            auto sl_circ = [&](Color c, const char* label) {
+                DrawCircle(slx + slp + 5, sly + slrh / 2, 5, c);
+                DrawText(label, slx + slp + 18, sly + 2, 11, LIGHTGRAY);
+                sly += slrh;
+            };
+            // Helper: draw one labeled row with a short horizontal line swatch
+            auto sl_line = [&](Color c, const char* label) {
+                DrawLine(slx + slp, sly + slrh / 2, slx + slp + 10, sly + slrh / 2, c);
+                DrawText(label, slx + slp + 18, sly + 2, 11, LIGHTGRAY);
+                sly += slrh;
+            };
+
+            sl_rect({ 55, 115, 55, 255 }, "Launcher");
+            sl_circ({ 220,  50,  50, 255 }, "Target");
+            sl_line({ 255, 165,   0, 255 }, "Trajectory arc");
+            sl_circ(YELLOW,               "Apex / Impact");
+            sl_circ({ 0, 220, 220, 255 }, "Intercept point");
+            sl_line({ 0, 220, 220, 255 }, "Lead vector");
+            sl_line({ 255, 100, 100, 255 }, "Target path");
+            sl_circ({ 200, 200,  50, 255 }, "Path endpoints");
+            // Axes row: three small colored squares
+            DrawRectangle(slx + slp,      sly + 4, 6, 6, RED);
+            DrawRectangle(slx + slp + 8,  sly + 4, 6, 6, GREEN);
+            DrawRectangle(slx + slp + 16, sly + 4, 6, 6, BLUE);
+            DrawText("E / N / Up  axes", slx + slp + 26, sly + 2, 11, LIGHTGRAY);
+        }
+
+        // ---- Controls / Help legend overlay ---------------------------------
+        if (show_help_legend) {
+            const Color lhdr = { 150, 155, 180, 255 };
+            const Color lhc  = { 175, 178, 200, 255 };
+            const Color ldim = { 140, 140, 160, 200 };
+            const int hlx  = PANEL_W + 16;
+            const int hlw  = 365;
+            const int hlh  = 296;
+            const int hly0 = (H - hlh) / 2;
+            const int hlp  = 12;
+            int hly = hly0 + 12;
+
+            DrawRectangleRounded({ (float)hlx, (float)hly0, (float)hlw, (float)hlh },
+                                   0.06f, 8, { 18, 20, 28, 228 });
+            DrawRectangleRoundedLines({ (float)hlx, (float)hly0, (float)hlw, (float)hlh },
+                                         0.06f, 8, 1.5f, { 65, 70, 95, 220 });
+
+            DrawText("CONTROLS & UI GUIDE", hlx + hlp, hly, 14, WHITE); hly += 22;
+
+            DrawText("KEYBOARD CONTROLS", hlx + hlp, hly, 11, lhdr); hly += 15;
+            DrawText("W / S / A / D      Move target  N / S / E / W", hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("Q / E              Move target altitude",         hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("  (disabled while moving target is active)",      hlx + hlp, hly, 10, ldim); hly += 14;
+            DrawText("Arrow keys         Move launcher  N / S / E / W", hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("Page Up / Down     Launcher altitude",            hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("Right-mouse drag   Orbit camera",                 hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("Middle-mouse drag  Pan camera  (Free mode only)", hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("Scroll wheel       Zoom",                         hlx + hlp, hly, 11, lhc); hly += 20;
+
+            DrawText("UI PANEL", hlx + hlp, hly, 11, lhdr); hly += 15;
+            DrawText("MUNITION       Select projectile type; set muzzle speed",  hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("LAUNCHER       Set launcher position  (E / N / Alt m)",    hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("TARGET         Set target position",                         hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("               (locked when moving target is active)",      hlx + hlp, hly, 10, ldim); hly += 14;
+            DrawText("MOVING TARGET  Enable mode; set speed, heading, distance", hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("FIRE SOLUTION  Angles, range, flight time, ready status",  hlx + hlp, hly, 11, lhc); hly += 14;
+            DrawText("VIEW FOCUS     Camera follows  Free / Launcher / Target",  hlx + hlp, hly, 11, lhc);
+        }
+
         // ---- GUI panel (left side) ----------------------------------------
         DrawRectangle(0, 0, PANEL_W, H, { 40, 43, 54, 255 });
         DrawRectangle(PANEL_W - 2, 0, 2, H, { 65, 70, 95, 255 }); // panel border
@@ -872,24 +971,12 @@ int main()
                      current.alt_diff_m), mx, y, 12, err_col); y += 16;
         }
 
-        // ---- View Focus -----------------------------------------------------
+        // ---- View Focus (anchored to fixed position near panel bottom) ------
+        y = H - 50;
         DrawText("VIEW FOCUS", mx, y, 12, sec_col); y += 16;
         const int vf_dd_y = y; // save Y for deferred dropdown draw
-        y += rh + 14;
+        y += rh + 6;
 
-        // ---- Keyboard help (anchored to bottom of panel) --------------------
-        int hy = H - 210;
-        DrawRectangle(mx - 4, hy - 8, cw + 8, 214, { 28, 30, 40, 200 });
-        DrawText("CONTROLS", mx, hy, 12, sec_col); hy += 18;
-        const Color hc = { 175, 178, 200, 255 };
-        DrawText("W / S / A / D      target  N / S / E / W", mx, hy, 12, hc); hy += 16;
-        DrawText("Q / E              target  altitude",       mx, hy, 12, hc); hy += 16;
-        DrawText("  (disabled while moving target is active)", mx, hy, 11, { 140, 140, 160, 200 }); hy += 16;
-        DrawText("Arrow keys         launcher N / S / E / W", mx, hy, 12, hc); hy += 16;
-        DrawText("Page Up / Down     launcher altitude",       mx, hy, 12, hc); hy += 16;
-        DrawText("Right-mouse drag   orbit camera",            mx, hy, 12, hc); hy += 16;
-        DrawText("Middle-mouse drag  pan camera",              mx, hy, 12, hc); hy += 16;
-        DrawText("Scroll wheel       zoom",                    mx, hy, 12, hc);
 
         // ---- Deferred dropdown draws (on top of all other controls) ---------
         if (GuiDropdownBox({ (float)mx, (float)vf_dd_y, (float)cw, (float)rh },
