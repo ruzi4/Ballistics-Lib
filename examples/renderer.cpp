@@ -52,14 +52,21 @@ struct SolveResult {
     double max_range_m   = 0.0;  // max achievable range (for diagnostics)
     double alt_diff_m    = 0.0;  // launcher altitude - target altitude
     std::vector<Vector3> traj;   // trajectory points in raylib coords
+    // Moving-target intercept extras
+    bool   has_intercept    = false;
+    Vec3   intercept_point  = {};  // ballistics coords
+    double lead_distance_m  = 0.0;
+    int    intercept_iters  = 0;
 };
 
 struct SolveParams {
-    Vec3                 launcher_pos;
-    Vec3                 target_pos;
-    MunitionSpec         munition;
+    Vec3                  launcher_pos;
+    Vec3                  target_pos;
+    Vec3                  target_velocity;  // m/s, ballistics coords; zero = stationary
+    bool                  target_moving = false;
+    MunitionSpec          munition;
     AtmosphericConditions atmo;
-    double               muzzle_speed;
+    double                muzzle_speed;
 };
 
 // ---------------------------------------------------------------------------
@@ -78,35 +85,75 @@ static SolveResult solve_async(const SolveParams& p)
 
     if (range_m < 1.0) return out; // launcher and target too close
 
-    const double az_deg       = std::atan2(dx, dy) * kRadToDeg;
+    TrajectorySimulator sim(p.munition, p.atmo);
+
+    // Build a quick table to find max range for diagnostics (aim toward
+    // current target; close enough for the diagnostic display).
+    const double az_diag      = std::atan2(dx, dy) * kRadToDeg;
     const double launch_height = p.launcher_pos.z - p.target_pos.z;
     const double target_alt    = p.target_pos.z;
 
-    TrajectorySimulator sim(p.munition, p.atmo);
-    LauncherOrientation orient;
-    orient.azimuth_deg = az_deg;
-
-    // Build a quick table to find max range for diagnostics
     FireControlTable diag_table;
-    diag_table.build(sim, p.muzzle_speed, az_deg, launch_height,
+    diag_table.build(sim, p.muzzle_speed, az_diag, launch_height,
                      false, 50, target_alt);
     out.max_range_m = diag_table.max_range_m();
 
-    FireSolution sol = solve_elevation(sim, orient, range_m,
-                                       p.muzzle_speed,
-                                       launch_height, /*high_angle=*/false,
-                                       /*tolerance_m=*/0.5,
-                                       target_alt);
-    if (!sol.valid) return out;
+    // -------------------------------------------------------------------
+    // Choose solver: moving-target intercept or static elevation solve
+    // -------------------------------------------------------------------
+    double       used_az  = az_diag;
+    double       used_el  = 0.0;
+    double       used_tof = 0.0;
+    Vec3         aim_pos  = p.target_pos; // position the trajectory ends at
+
+    if (p.target_moving) {
+        // Iterative intercept solve: accounts for target velocity
+        InterceptSolution isol = solve_moving_target(
+            sim,
+            p.launcher_pos,
+            p.target_pos,
+            p.target_velocity,
+            p.muzzle_speed,
+            /*high_angle=*/false,
+            /*tolerance_m=*/0.5,
+            /*max_iterations=*/10);
+
+        if (!isol.valid) return out;
+
+        used_az  = isol.azimuth_deg;
+        used_el  = isol.fire.elevation_deg;
+        used_tof = isol.fire.flight_time_ms / 1000.0;
+        aim_pos  = isol.intercept_point;
+
+        out.has_intercept   = true;
+        out.intercept_point = isol.intercept_point;
+        out.lead_distance_m = isol.lead_distance_m;
+        out.intercept_iters = isol.iterations;
+    } else {
+        // Standard static-target solve
+        LauncherOrientation orient;
+        orient.azimuth_deg = az_diag;
+
+        FireSolution sol = solve_elevation(sim, orient, range_m,
+                                           p.muzzle_speed,
+                                           launch_height, /*high_angle=*/false,
+                                           /*tolerance_m=*/0.5,
+                                           target_alt);
+        if (!sol.valid) return out;
+
+        used_az  = az_diag;
+        used_el  = sol.elevation_deg;
+        used_tof = sol.flight_time_ms / 1000.0;
+    }
 
     out.valid         = true;
-    out.azimuth_deg   = az_deg;
-    out.elevation_deg = sol.elevation_deg;
-    out.flight_time_s = sol.flight_time_ms / 1000.0;
+    out.azimuth_deg   = used_az;
+    out.elevation_deg = used_el;
+    out.flight_time_s = used_tof;
 
     // Collect trajectory points in absolute world coordinates
-    const double az_r = az_deg           * kDegToRad;
-    const double el_r = sol.elevation_deg * kDegToRad;
+    const double az_r = used_az * kDegToRad;
+    const double el_r = used_el * kDegToRad;
     const double v    = p.muzzle_speed;
 
     ProjectileState init;
@@ -119,10 +166,10 @@ static SolveResult solve_async(const SolveParams& p)
     init.time = 0.0;
 
     SimulationConfig cfg;
-    cfg.dt       = 1.0 / 60.0;                           // 60 Hz — fine for visualization
+    cfg.dt       = 1.0 / 60.0;                            // 60 Hz — fine for visualization
     cfg.use_rk4  = true;
-    cfg.max_time = out.flight_time_s * 1.5 + 2.0;
-    cfg.ground_z = p.target_pos.z - 0.5;                  // slightly below target
+    cfg.max_time = used_tof * 1.5 + 2.0;
+    cfg.ground_z = aim_pos.z - 0.5;                       // slightly below impact plane
 
     auto states = sim.simulate(init, cfg);
     out.traj.reserve(states.size());
@@ -263,6 +310,7 @@ int main()
     float p_tx = tx,        p_ty = ty, p_tz = tz;
     int   p_mi = mun_idx - 1;
     float p_mv = muzzle_speed - 1.f;
+    bool  p_tm = !target_moving;  // force dirty on first frame
 
     // -----------------------------------------------------------------------
     // Camera orbit state
@@ -375,13 +423,15 @@ int main()
         // -------------------------------------------------------------------
         if (lx != p_lx || ly != p_ly || lz != p_lz ||
             tx != p_tx || ty != p_ty || tz != p_tz ||
-            mun_idx != p_mi || muzzle_speed != p_mv)
+            mun_idx != p_mi || muzzle_speed != p_mv ||
+            target_moving != p_tm)
         {
             dirty = true;
             p_lx = lx; p_ly = ly; p_lz = lz;
             p_tx = tx; p_ty = ty; p_tz = tz;
             p_mi = mun_idx;
             p_mv = muzzle_speed;
+            p_tm = target_moving;
         }
 
         // -------------------------------------------------------------------
@@ -392,8 +442,21 @@ int main()
             computing = true;
 
             SolveParams sp;
-            sp.launcher_pos = { lx, ly, lz };
-            sp.target_pos   = { tx, ty, tz };
+            sp.launcher_pos   = { lx, ly, lz };
+            sp.target_pos     = { tx, ty, tz };
+            sp.target_moving  = target_moving;
+            // Compute target velocity vector from speed + heading + direction
+            if (target_moving) {
+                const float yaw_r = target_yaw * (float)kDegToRad;
+                const float dir   = target_travel_fwd ? 1.f : -1.f;
+                sp.target_velocity = {
+                    (double)(dir * target_speed * std::sin(yaw_r)),
+                    (double)(dir * target_speed * std::cos(yaw_r)),
+                    0.0
+                };
+            } else {
+                sp.target_velocity = { 0.0, 0.0, 0.0 };
+            }
             sp.munition     = lib.get(mun_names[(size_t)mun_idx]);
             sp.atmo         = atmo;
             sp.muzzle_speed = (double)muzzle_speed;
@@ -512,6 +575,24 @@ int main()
             draw_trajectory(current.traj);
             // Impact marker at trajectory end
             DrawSphere(current.traj.back(), 0.55f, { 255, 200, 0, 255 });
+        }
+
+        // Moving-target intercept: draw predicted intercept point + lead vector
+        if (current.valid && current.has_intercept) {
+            Vector3 rl_ipt = to_rl(current.intercept_point);
+
+            // Cyan sphere at predicted intercept position
+            DrawSphere(rl_ipt, 0.8f, { 0, 220, 220, 220 });
+            DrawSphereWires(rl_ipt, 0.8f, 8, 8, { 0, 160, 160, 255 });
+
+            // Vertical dashed stake from ground to intercept sphere
+            Vector3 ipt_ground = { rl_ipt.x, 0.04f, rl_ipt.z };
+            DrawLine3D(ipt_ground, rl_ipt, { 0, 180, 180, 160 });
+
+            // Lead vector: line from current target to intercept point
+            DrawLine3D({ rl_t.x, 0.08f, rl_t.z },
+                       { ipt_ground.x, 0.08f, ipt_ground.z },
+                       { 0, 255, 255, 200 });
         }
 
         EndMode3D();
@@ -634,6 +715,11 @@ int main()
             DrawText(TextFormat("Elevation : %7.2f deg", current.elevation_deg), mx, y, 14, fc); y += 20;
             DrawText(TextFormat("Range     : %7.0f m",   current.range_m),       mx, y, 14, fc); y += 20;
             DrawText(TextFormat("Flight T  : %7.3f s",   current.flight_time_s), mx, y, 14, fc); y += 20;
+            if (current.has_intercept) {
+                const Color lc = { 0, 220, 220, 255 };
+                DrawText(TextFormat("Lead dist : %7.1f m",   current.lead_distance_m),  mx, y, 14, lc); y += 20;
+                DrawText(TextFormat("Itr conv  : %7d",       current.intercept_iters),   mx, y, 14, lc); y += 20;
+            }
         } else if (computing) {
             DrawText("  Computing...", mx, y, 14, YELLOW); y += 20;
         } else {

@@ -182,6 +182,112 @@ FireSolution solve_elevation(
 }
 
 // ---------------------------------------------------------------------------
+// solve_moving_target
+// ---------------------------------------------------------------------------
+// Algorithm: iterative fixed-point.
+//
+//   1. Solve elevation to the *current* target position → flight time T₀.
+//   2. Project the target forward: intercept = target_pos + target_vel × Tₙ.
+//   3. Solve elevation to the *projected* intercept → new flight time Tₙ₊₁.
+//   4. Repeat from step 2 until |Tₙ₊₁ − Tₙ| < 1 ms or max_iterations.
+//
+// The azimuth must be recomputed at each iteration because the intercept
+// point's bearing from the launcher changes as the lead grows.
+// ---------------------------------------------------------------------------
+
+InterceptSolution solve_moving_target(
+    const TrajectorySimulator& sim,
+    const Vec3&                launcher_pos,
+    const Vec3&                target_pos,
+    const Vec3&                target_velocity,
+    double                     muzzle_speed_ms,
+    bool                       high_angle,
+    double                     tolerance_m,
+    int                        max_iterations)
+{
+    if (muzzle_speed_ms <= 0.0)
+        throw std::invalid_argument("muzzle_speed_ms must be positive");
+
+    // --- Step 1: initial solve to the current target position ---------------
+    const double dx0  = target_pos.x - launcher_pos.x;
+    const double dy0  = target_pos.y - launcher_pos.y;
+    const double rng0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
+
+    if (rng0 < 1.0) return {}; // launcher and target essentially co-located
+
+    const double az0 = std::atan2(dx0, dy0) * kRadToDeg;
+    const double lh0 = launcher_pos.z - target_pos.z;
+
+    LauncherOrientation orient0;
+    orient0.azimuth_deg = az0;
+
+    FireSolution fs0 = solve_elevation(sim, orient0, rng0, muzzle_speed_ms,
+                                       lh0, high_angle, tolerance_m,
+                                       target_pos.z);
+    if (!fs0.valid) return {}; // target already out of range
+
+    // Convergence loop
+    double flight_time_s = fs0.flight_time_ms / 1000.0;
+
+    FireSolution best_sol = fs0;
+    double       best_az  = az0;
+    Vec3         best_ipt = target_pos; // intercept point
+    int          best_itr = 0;
+
+    for (int iter = 0; iter < max_iterations; ++iter) {
+        // --- Step 2: project target position --------------------------------
+        const Vec3 ipt = {
+            target_pos.x + target_velocity.x * flight_time_s,
+            target_pos.y + target_velocity.y * flight_time_s,
+            target_pos.z + target_velocity.z * flight_time_s
+        };
+
+        // --- Step 3: solve to the projected intercept point -----------------
+        const double dx  = ipt.x - launcher_pos.x;
+        const double dy  = ipt.y - launcher_pos.y;
+        const double rng = std::sqrt(dx * dx + dy * dy);
+
+        if (rng < 1.0) return {}; // intercept collapsed onto launcher
+
+        const double az = std::atan2(dx, dy) * kRadToDeg;
+        const double lh = launcher_pos.z - ipt.z;
+
+        LauncherOrientation orient;
+        orient.azimuth_deg = az;
+
+        FireSolution fs = solve_elevation(sim, orient, rng, muzzle_speed_ms,
+                                          lh, high_angle, tolerance_m, ipt.z);
+        if (!fs.valid) return {}; // intercept point is out of range
+
+        const double new_tof = fs.flight_time_ms / 1000.0;
+
+        best_sol = fs;
+        best_az  = az;
+        best_ipt = ipt;
+        best_itr = iter + 1;
+
+        // --- Step 4: check convergence (1 ms threshold) ---------------------
+        if (std::abs(new_tof - flight_time_s) < 0.001) break;
+
+        flight_time_s = new_tof;
+    }
+
+    // Compute horizontal lead distance
+    const double ldx = best_ipt.x - target_pos.x;
+    const double ldy = best_ipt.y - target_pos.y;
+    const double lead = std::sqrt(ldx * ldx + ldy * ldy);
+
+    InterceptSolution result;
+    result.fire           = best_sol;
+    result.azimuth_deg    = best_az;
+    result.intercept_point = best_ipt;
+    result.lead_distance_m = lead;
+    result.iterations     = best_itr;
+    result.valid          = true;
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // FireControlTable::build
 // ---------------------------------------------------------------------------
 // Strategy: sweep num_samples elevation angles across the full search range,
