@@ -36,7 +36,7 @@ horizontal, 90° = straight up.
 
 ## Requirements
 
-- CMake 3.20+
+- CMake 3.20+ (including CMake 4.x)
 - A C++17-capable compiler (GCC 9+, Clang 10+, or MSVC 2019+)
 - Internet access at configure time (nlohmann/json is fetched via `FetchContent`;
   raylib and raygui are fetched only when examples are enabled)
