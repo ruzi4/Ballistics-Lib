@@ -1003,18 +1003,47 @@ static ImpactResult resimulate(const TrajectorySimulator& sim,
     SimulationConfig cfg;
     cfg.dt       = 1.0 / 240.0;
     cfg.max_time = 120.0;
-    cfg.ground_z = target_alt_m;
     cfg.use_rk4  = true;
 
-    ProjectileState last = st;
-    sim.simulate(st, cfg, [&last](const ProjectileState& s) {
-        last = s;
-        return true;
-    });
+    if (launch_height_m < 0.0) {
+        // Launcher is BELOW the target plane: detect the ascending crossing of
+        // target_alt_m (the projectile rises through the target altitude going up).
+        // simulate() only detects descending crossings via ground_z, so we use a
+        // streaming callback to catch the first upward crossing instead.
+        cfg.ground_z = st.position.z - 1.0;  // floor below launcher; never triggered
 
-    const double hr = std::sqrt(last.position.x * last.position.x
-                               + last.position.y * last.position.y);
-    return {hr, last.position.z, last.time};
+        ProjectileState prev = st, impact = st;
+        bool found = false;
+        sim.simulate(st, cfg, [&](const ProjectileState& s) {
+            if (!found && prev.position.z < target_alt_m && s.position.z >= target_alt_m) {
+                const double frac = (target_alt_m - prev.position.z)
+                                  / (s.position.z  - prev.position.z);
+                impact.position.x = prev.position.x + frac * (s.position.x - prev.position.x);
+                impact.position.y = prev.position.y + frac * (s.position.y - prev.position.y);
+                impact.position.z = target_alt_m;
+                impact.time       = prev.time        + frac * (s.time        - prev.time);
+                found = true;
+                return false;  // stop simulation
+            }
+            prev = s;
+            return true;
+        });
+        const double hr = std::sqrt(impact.position.x * impact.position.x
+                                   + impact.position.y * impact.position.y);
+        return {hr, impact.position.z, impact.time};
+    } else {
+        // Normal case: launcher at or above the target plane; simulate() terminates
+        // when the projectile descends to ground_z = target_alt_m.
+        cfg.ground_z = target_alt_m;
+        ProjectileState last = st;
+        sim.simulate(st, cfg, [&last](const ProjectileState& s) {
+            last = s;
+            return true;
+        });
+        const double hr = std::sqrt(last.position.x * last.position.x
+                                   + last.position.y * last.position.y);
+        return {hr, last.position.z, last.time};
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,7 +1143,12 @@ static void test_altitude_launcher_above_target() {
 //         from the FireControlTable envelope and re-simulated to verify accuracy.
 // ---------------------------------------------------------------------------
 static void test_altitude_launcher_below_target() {
-    SECTION("Altitude: launcher below target — impossible small ranges → valid=false");
+    // NOTE: These cases were originally labelled "impossible small ranges"
+    // because the old solver only detected DESCENDING crossings of target_z.
+    // The ascending-crossing fix means a steep (low-angle) shot can reach the
+    // elevated target plane on the way up at short horizontal distances.
+    // All three cases are now achievable and must return valid=true.
+    SECTION("Altitude: launcher below target — short ranges via ascending path → valid=true");
 
     MunitionLibrary lib;
     bool loaded = false;
@@ -1129,23 +1163,23 @@ static void test_altitude_launcher_below_target() {
         return;
     }
 
-    // These ranges are far below the minimum achievable descending-crossing
-    // range for each scenario; valid=false is the correct answer.
-    struct ImpossibleCase {
+    // These ranges require steep ascending shots — achievable with the
+    // ascending-crossing fix.  low-angle solver finds the ascending crossing.
+    struct ShortRangeCase {
         double launcher_alt, target_alt, muzzle, range;
         const char* munition;
         const char* label;
     };
-    const ImpossibleCase impossible[] = {
+    const ShortRangeCase short_range[] = {
         { 0.0,  200.0, 930.0, 300.0, "5.56x45_m855_62gr",
-          "5.56: launcher 0m, target 200m, range 300m (too short)" },
+          "5.56: launcher 0m, target 200m, range 300m (ascending path)" },
         { 0.0,  400.0, 853.0, 350.0, "7.62x51_m80_147gr",
-          "7.62: launcher 0m, target 400m, range 350m (too short)" },
+          "7.62: launcher 0m, target 400m, range 350m (ascending path)" },
         { 0.0,  300.0, 930.0, 200.0, "338_lapua_250gr",
-          ".338: launcher 0m, target 300m, range 200m (too short)" },
+          ".338: launcher 0m, target 300m, range 200m (ascending path)" },
     };
 
-    for (const auto& s : impossible) {
+    for (const auto& s : short_range) {
         const double lh = s.launcher_alt - s.target_alt;
         AtmosphericConditions atm = isa_conditions(s.launcher_alt);
         TrajectorySimulator sim(lib.get(s.munition), atm);
@@ -1153,9 +1187,22 @@ static void test_altitude_launcher_below_target() {
         FireSolution sol = solve_elevation(sim, LauncherOrientation{0.0},
                                            s.range, s.muzzle,
                                            lh, false, 0.5, s.target_alt);
-        std::printf("  [%s]\n    valid=%s (expected false)\n",
-                    s.label, sol.valid ? "true" : "false");
-        CHECK(!sol.valid);
+        std::printf("  [%s]\n    valid=%s  elev=%.2f°  ToF=%.0f ms\n",
+                    s.label, sol.valid ? "true" : "false",
+                    sol.elevation_deg, sol.flight_time_ms);
+        CHECK(sol.valid);
+
+        if (!sol.valid) continue;
+        // The ascending path requires a steep upward angle
+        CHECK(sol.elevation_deg > 0.0);
+
+        // Re-simulate via ascending crossing and verify impact
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0,
+                                      s.muzzle, lh, s.target_alt);
+        std::printf("    re-sim: h_range=%.2f m  z=%.2f m (target %.2f m)\n",
+                    imp.h_range_m, imp.z_m, s.target_alt);
+        CHECK_NEAR(imp.h_range_m, s.range, 2.0);
+        CHECK_NEAR(imp.z_m, s.target_alt, 1.0);
     }
 
     // -----------------------------------------------------------------------
@@ -1453,6 +1500,386 @@ static void test_altitude_flight_time_within_max() {
 }
 
 // ---------------------------------------------------------------------------
+// Moving-target intercept tests
+// ---------------------------------------------------------------------------
+
+// Helper: load the munition library from the usual relative paths.
+// Returns false and prints a skip message when not found.
+static bool load_lib_for_moving(MunitionLibrary& lib) {
+    for (const char* p : {"data/munitions.json",
+                           "../data/munitions.json",
+                           "../../data/munitions.json"}) {
+        try { lib.load(p); return true; }
+        catch (const std::runtime_error&) {}
+    }
+    std::printf("  Skipped: munitions file not found\n");
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// solve_moving_target: zero-velocity target → same result as solve_elevation
+// ---------------------------------------------------------------------------
+static void test_moving_target_stationary() {
+    SECTION("solve_moving_target: zero velocity == solve_elevation result");
+
+    MunitionLibrary lib;
+    if (!load_lib_for_moving(lib)) return;
+
+    AtmosphericConditions atm = isa_conditions(0.0);
+    TrajectorySimulator sim(lib.get("7.62x51_m80_147gr"), atm);
+
+    const double muzzle = 853.0;
+    Vec3 launcher_pos = { 0.0, 0.0, 0.0 };
+    Vec3 target_pos   = { 500.0, 300.0, 0.0 };  // same altitude as launcher
+    Vec3 velocity     = { 0.0, 0.0, 0.0 };       // stationary
+
+    InterceptSolution isol = solve_moving_target(
+        sim, launcher_pos, target_pos, velocity, muzzle);
+
+    std::printf("  Stationary target: valid=%s  az=%.2f°  el=%.2f°  tof=%.0f ms  iters=%d\n",
+                isol.valid ? "true" : "false",
+                isol.azimuth_deg, isol.fire.elevation_deg,
+                isol.fire.flight_time_ms, isol.iterations);
+
+    CHECK(isol.valid);
+    if (!isol.valid) return;
+
+    // With zero velocity the intercept point should equal the target position.
+    const double dx = isol.intercept_point.x - target_pos.x;
+    const double dy = isol.intercept_point.y - target_pos.y;
+    const double dz = isol.intercept_point.z - target_pos.z;
+    CHECK_NEAR(std::sqrt(dx*dx + dy*dy + dz*dz), 0.0, 1.0);  // within 1 m
+
+    // Lead distance should be negligible for a stationary target.
+    CHECK(isol.lead_distance_m < 2.0);
+
+    // The solve_elevation comparison
+    const double range2d = std::sqrt(500.0*500.0 + 300.0*300.0);
+    FireSolution ref = solve_elevation(sim, LauncherOrientation{isol.azimuth_deg},
+                                       range2d, muzzle);
+    CHECK(ref.valid);
+    if (ref.valid) {
+        CHECK_NEAR(isol.fire.elevation_deg, ref.elevation_deg, 0.5);
+        CHECK_NEAR(isol.fire.flight_time_ms, ref.flight_time_ms, 10.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// solve_moving_target: target at same altitude — lead accounting
+// ---------------------------------------------------------------------------
+static void test_moving_target_level() {
+    SECTION("solve_moving_target: moving target at same altitude as launcher");
+
+    MunitionLibrary lib;
+    if (!load_lib_for_moving(lib)) return;
+
+    AtmosphericConditions atm = isa_conditions(0.0);
+    TrajectorySimulator sim(lib.get("7.62x51_m80_147gr"), atm);
+
+    const double muzzle = 853.0;
+    Vec3 launcher_pos = { 0.0, 0.0, 0.0 };
+    Vec3 target_pos   = { 0.0, 400.0, 0.0 };   // 400 m North
+    Vec3 velocity     = { 15.0, 0.0, 0.0 };     // 15 m/s East (crossing target)
+
+    InterceptSolution isol = solve_moving_target(
+        sim, launcher_pos, target_pos, velocity, muzzle);
+
+    std::printf("  Level moving target: valid=%s  az=%.2f°  el=%.2f°"
+                "  tof=%.0f ms  lead=%.1f m  iters=%d\n",
+                isol.valid ? "true" : "false",
+                isol.azimuth_deg, isol.fire.elevation_deg,
+                isol.fire.flight_time_ms, isol.lead_distance_m,
+                isol.iterations);
+
+    CHECK(isol.valid);
+    if (!isol.valid) return;
+
+    // Intercept point should be ahead of the current target position in the
+    // direction of travel (East = +x).
+    CHECK(isol.intercept_point.x > target_pos.x);
+
+    // Lead distance must be positive and proportional to velocity × TOF
+    CHECK(isol.lead_distance_m > 0.0);
+
+    // The azimuth must lead the target — launcher aims East of North, so > 0°
+    CHECK(isol.azimuth_deg > 0.0);
+    CHECK(isol.azimuth_deg < 45.0);   // but not a wild angle
+
+    // Convergence should be fast (< 8 iterations)
+    CHECK(isol.iterations <= 8);
+}
+
+// ---------------------------------------------------------------------------
+// solve_moving_target: target ELEVATED above the launcher
+// (exercises the ascending-crossing bug-fix in shoot())
+// ---------------------------------------------------------------------------
+static void test_moving_target_elevated_above_launcher() {
+    SECTION("solve_moving_target: moving target elevated above launcher");
+
+    MunitionLibrary lib;
+    if (!load_lib_for_moving(lib)) return;
+
+    // Use .338 Lapua for sufficient range + elevation capability
+    const MunitionSpec& spec = lib.get("338_lapua_250gr");
+    AtmosphericConditions atm = isa_conditions(0.0);
+    TrajectorySimulator sim(spec, atm);
+
+    const double muzzle = 930.0;
+
+    struct ElevatedCase {
+        double launcher_z;
+        double target_z;
+        double target_x;
+        double target_y;
+        double vel_x;
+        double vel_y;
+        const char* label;
+    };
+    const ElevatedCase cases[] = {
+        // Target 50 m above launcher, moving North
+        { 0.0,  50.0, 0.0, 600.0, 0.0, 12.0,
+          "target +50 m, moving N at 12 m/s" },
+        // Target 150 m above launcher, moving East
+        { 0.0, 150.0, 300.0, 500.0, 20.0, 0.0,
+          "target +150 m, moving E at 20 m/s" },
+        // Both at altitude: launcher 100 m, target 300 m (200 m delta)
+        { 100.0, 300.0, 0.0, 700.0, -10.0, 5.0,
+          "launcher 100m, target 300m, moving NW at ~11 m/s" },
+    };
+
+    for (const auto& c : cases) {
+        Vec3 launcher_pos = { 0.0, 0.0, c.launcher_z };
+        Vec3 target_pos   = { c.target_x, c.target_y, c.target_z };
+        Vec3 velocity     = { c.vel_x, c.vel_y, 0.0 };
+
+        // high_angle=true: the only valid mode when launcher is below target
+        InterceptSolution isol = solve_moving_target(
+            sim, launcher_pos, target_pos, velocity, muzzle,
+            /*high_angle=*/true);
+
+        std::printf("  [%s]\n    valid=%s  az=%.2f°  el=%.2f°  tof=%.0f ms"
+                    "  lead=%.1f m  iters=%d\n",
+                    c.label,
+                    isol.valid ? "true" : "false",
+                    isol.azimuth_deg, isol.fire.elevation_deg,
+                    isol.fire.flight_time_ms, isol.lead_distance_m,
+                    isol.iterations);
+
+        CHECK(isol.valid);
+        if (!isol.valid) continue;
+
+        // Shot must be aimed upward (launcher is below the target plane)
+        CHECK(isol.fire.elevation_deg > 0.0);
+
+        // Intercept point must be at (approximately) the target's altitude
+        CHECK_NEAR(isol.intercept_point.z, c.target_z, 5.0);
+
+        // Lead must reflect actual target motion
+        if (std::abs(c.vel_x) + std::abs(c.vel_y) > 0.0)
+            CHECK(isol.lead_distance_m > 0.0);
+
+        // Sanity-check intercept point placement:
+        // forward-project target by flight time, check proximity
+        const double tof_s = isol.fire.flight_time_ms / 1000.0;
+        Vec3 expected_intercept = {
+            target_pos.x + velocity.x * tof_s,
+            target_pos.y + velocity.y * tof_s,
+            target_pos.z
+        };
+        const double ex = isol.intercept_point.x - expected_intercept.x;
+        const double ey = isol.intercept_point.y - expected_intercept.y;
+        CHECK_NEAR(std::sqrt(ex*ex + ey*ey), 0.0, 5.0);  // within 5 m
+
+        CHECK(isol.iterations <= 10);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// solve_moving_target: target BELOW launcher (launcher above target)
+// ---------------------------------------------------------------------------
+static void test_moving_target_launcher_above() {
+    SECTION("solve_moving_target: moving target below the launcher");
+
+    MunitionLibrary lib;
+    if (!load_lib_for_moving(lib)) return;
+
+    AtmosphericConditions atm = isa_conditions(500.0);
+    TrajectorySimulator sim(lib.get("5.56x45_m855_62gr"), atm);
+
+    const double muzzle = 930.0;
+    Vec3 launcher_pos = { 0.0, 0.0, 500.0 };   // launcher 500 m up
+    Vec3 target_pos   = { 0.0, 350.0,  0.0 };   // target at ground level
+    Vec3 velocity     = { 10.0, 0.0, 0.0 };     // 10 m/s East
+
+    InterceptSolution isol = solve_moving_target(
+        sim, launcher_pos, target_pos, velocity, muzzle,
+        /*high_angle=*/false);
+
+    std::printf("  Launcher above (500m): valid=%s  el=%.2f°  tof=%.0f ms  lead=%.1f m\n",
+                isol.valid ? "true" : "false",
+                isol.fire.elevation_deg, isol.fire.flight_time_ms,
+                isol.lead_distance_m);
+
+    CHECK(isol.valid);
+    if (!isol.valid) return;
+
+    // Shooting downward: elevation should be negative
+    CHECK(isol.fire.elevation_deg < 0.0);
+    CHECK(isol.lead_distance_m > 0.0);
+
+    // Intercept altitude should be near ground (0 m)
+    CHECK_NEAR(isol.intercept_point.z, 0.0, 5.0);
+}
+
+// ---------------------------------------------------------------------------
+// solve_moving_target_slewed: slew time is non-zero when launcher is misaligned
+// ---------------------------------------------------------------------------
+static void test_moving_target_slewed_basic() {
+    SECTION("solve_moving_target_slewed: slew_time_s > 0 when launcher is misaligned");
+
+    MunitionLibrary lib;
+    if (!load_lib_for_moving(lib)) return;
+
+    AtmosphericConditions atm = isa_conditions(0.0);
+    TrajectorySimulator sim(lib.get("7.62x51_m80_147gr"), atm);
+
+    const double muzzle = 853.0;
+    Vec3 launcher_pos = { 0.0, 0.0, 0.0 };
+    Vec3 target_pos   = { 0.0, 500.0, 0.0 };  // due North
+    Vec3 velocity     = { 10.0, 0.0, 0.0 };   // 10 m/s East
+
+    LauncherSlew slew;
+    slew.yaw_deg_per_s   = 25.0;
+    slew.pitch_deg_per_s = 25.0;
+
+    // Case A: launcher already aimed at the target → slew_time near 0
+    {
+        const double az_on = 0.0;   // North = 0°, exactly toward target
+        const double el_on = 0.0;
+        InterceptSolution isol = solve_moving_target_slewed(
+            sim, launcher_pos, az_on, el_on,
+            target_pos, velocity, muzzle, slew);
+
+        std::printf("  On-target launcher: valid=%s  slew_time=%.3f s\n",
+                    isol.valid ? "true" : "false", isol.slew_time_s);
+        CHECK(isol.valid);
+        // Slew time may be small but should not be negative
+        CHECK(isol.slew_time_s >= 0.0);
+    }
+
+    // Case B: launcher pointing 90° off (East) → noticeable slew time
+    {
+        const double az_off = 90.0;   // East — far off from North target
+        const double el_off = 0.0;
+        InterceptSolution isol = solve_moving_target_slewed(
+            sim, launcher_pos, az_off, el_off,
+            target_pos, velocity, muzzle, slew);
+
+        std::printf("  Off-target launcher (90° off): valid=%s  slew_time=%.3f s\n",
+                    isol.valid ? "true" : "false", isol.slew_time_s);
+        CHECK(isol.valid);
+        // 90° at 25°/s → at least ~3 s of slew
+        CHECK(isol.slew_time_s > 2.0);
+        // Intercept point must be ahead of where target is now
+        CHECK(isol.lead_distance_m > 0.0);
+    }
+
+    // Case C: slew_time_s should be larger than in the no-slew version
+    //         (because the target moves further during the slew delay)
+    InterceptSolution plain = solve_moving_target(
+        sim, launcher_pos, target_pos, velocity, muzzle);
+    InterceptSolution slewed = solve_moving_target_slewed(
+        sim, launcher_pos, 90.0, 0.0, target_pos, velocity, muzzle, slew);
+
+    if (plain.valid && slewed.valid) {
+        // The slew-aware lead must be at least as large as the plain lead
+        // (target moves further during the slew period)
+        std::printf("  Plain lead=%.1f m   Slewed lead=%.1f m\n",
+                    plain.lead_distance_m, slewed.lead_distance_m);
+        CHECK(slewed.lead_distance_m >= plain.lead_distance_m - 1.0);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// solve_moving_target_slewed: elevated target above the launcher
+// (combines the ascending-crossing bug-fix with slew-time calculation)
+// ---------------------------------------------------------------------------
+static void test_moving_target_slewed_elevated() {
+    SECTION("solve_moving_target_slewed: target elevated above launcher + slew");
+
+    MunitionLibrary lib;
+    if (!load_lib_for_moving(lib)) return;
+
+    const MunitionSpec& spec = lib.get("338_lapua_250gr");
+    AtmosphericConditions atm = isa_conditions(0.0);
+    TrajectorySimulator sim(spec, atm);
+
+    const double muzzle = 930.0;
+    Vec3 launcher_pos = { 0.0, 0.0,   0.0 };
+    Vec3 target_pos   = { 0.0, 600.0, 120.0 };  // 120 m above launcher
+    Vec3 velocity     = { 15.0, 0.0,  0.0 };    // 15 m/s East
+
+    LauncherSlew slew;
+    slew.yaw_deg_per_s   = 25.0;
+    slew.pitch_deg_per_s = 25.0;
+
+    // Launcher pointing South (180°) — far off target — to generate slew time
+    InterceptSolution isol = solve_moving_target_slewed(
+        sim, launcher_pos,
+        /*current_az=*/180.0, /*current_el=*/0.0,
+        target_pos, velocity, muzzle, slew,
+        /*high_angle=*/true);
+
+    std::printf("  Elevated+slewed: valid=%s  az=%.2f°  el=%.2f°  tof=%.0f ms"
+                "  slew_time=%.3f s  lead=%.1f m  iters=%d\n",
+                isol.valid ? "true" : "false",
+                isol.azimuth_deg, isol.fire.elevation_deg,
+                isol.fire.flight_time_ms, isol.slew_time_s,
+                isol.lead_distance_m, isol.iterations);
+
+    CHECK(isol.valid);
+    if (!isol.valid) return;
+
+    // Launcher must aim upward to reach elevated target
+    CHECK(isol.fire.elevation_deg > 0.0);
+
+    // Non-trivial slew: 180° at 25°/s → slew_time must be several seconds
+    CHECK(isol.slew_time_s > 2.0);
+
+    // Target is moving East during slew, so lead must be significant
+    CHECK(isol.lead_distance_m > 0.0);
+
+    // Intercept altitude must be near the target plane (120 m)
+    CHECK_NEAR(isol.intercept_point.z, target_pos.z, 10.0);
+}
+
+// ---------------------------------------------------------------------------
+// solve_moving_target: returns valid=false when target is out of range
+// ---------------------------------------------------------------------------
+static void test_moving_target_out_of_range() {
+    SECTION("solve_moving_target: returns valid=false when target is out of range");
+
+    MunitionLibrary lib;
+    if (!load_lib_for_moving(lib)) return;
+
+    AtmosphericConditions atm = isa_conditions(0.0);
+    TrajectorySimulator sim(lib.get("5.56x45_m855_62gr"), atm);
+
+    const double muzzle = 930.0;
+    Vec3 launcher_pos = { 0.0, 0.0, 0.0 };
+    // 50 km is far beyond any achievable range
+    Vec3 target_pos   = { 0.0, 50000.0, 0.0 };
+    Vec3 velocity     = { 0.0, 0.0, 0.0 };
+
+    InterceptSolution isol = solve_moving_target(
+        sim, launcher_pos, target_pos, velocity, muzzle);
+
+    std::printf("  Out-of-range: valid=%s (expected false)\n",
+                isol.valid ? "true" : "false");
+    CHECK(!isol.valid);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1493,6 +1920,15 @@ int main() {
     test_altitude_both_nonzero();
     test_altitude_fire_table();
     test_altitude_flight_time_within_max();
+
+    // Moving-target intercept tests (solve_moving_target / solve_moving_target_slewed)
+    test_moving_target_stationary();
+    test_moving_target_level();
+    test_moving_target_elevated_above_launcher();
+    test_moving_target_launcher_above();
+    test_moving_target_slewed_basic();
+    test_moving_target_slewed_elevated();
+    test_moving_target_out_of_range();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);
