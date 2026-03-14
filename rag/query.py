@@ -18,6 +18,7 @@ def query_rag(
     db_path: str = "./rag_db",
     n_results: int = 8,
     stream: bool = True,
+    retrieve_only: bool = False,
 ) -> str:
     db = chromadb.PersistentClient(path=db_path)
     collection = db.get_collection(COLLECTION)
@@ -33,6 +34,10 @@ def query_rag(
             f"```\n{doc}\n```"
         )
     context = "\n\n".join(context_parts)
+
+    if retrieve_only:
+        print(context)
+        return context
 
     user_message = f"<context>\n{context}\n</context>\n\nQuestion: {question}"
 

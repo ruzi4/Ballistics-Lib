@@ -27,24 +27,25 @@ def cmd_query(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(f"\nQuery: {question}\n{'─' * 60}\n")
-    answer = query_rag(question, db_path=args.db, n_results=args.results)
+    answer = query_rag(question, db_path=args.db, n_results=args.results, retrieve_only=args.retrieve_only)
 
-    # Sources footer
-    # (query_rag already printed the streamed answer; just list sources)
-    from chromadb import PersistentClient
+    if not args.retrieve_only:
+        # Sources footer
+        # (query_rag already printed the streamed answer; just list sources)
+        from chromadb import PersistentClient
 
-    db = PersistentClient(path=args.db)
-    collection = db.get_collection("ballistics")
-    results = collection.query(query_texts=[question], n_results=args.results)
-    metas = results["metadatas"][0]
+        db = PersistentClient(path=args.db)
+        collection = db.get_collection("ballistics")
+        results = collection.query(query_texts=[question], n_results=args.results)
+        metas = results["metadatas"][0]
 
-    print(f"\n{'─' * 60}\nSources:")
-    seen: set[str] = set()
-    for m in metas:
-        label = f"  {m['file']}:{m['start_line']}–{m['end_line']}"
-        if label not in seen:
-            print(label)
-            seen.add(label)
+        print(f"\n{'─' * 60}\nSources:")
+        seen: set[str] = set()
+        for m in metas:
+            label = f"  {m['file']}:{m['start_line']}–{m['end_line']}"
+            if label not in seen:
+                print(label)
+                seen.add(label)
 
 
 def main() -> None:
@@ -69,6 +70,12 @@ def main() -> None:
         type=int,
         default=8,
         help="Number of chunks to retrieve (default: 8)",
+    )
+    p_query.add_argument(
+        "--retrieve-only",
+        action="store_true",
+        default=False,
+        help="Print retrieved source chunks without calling Claude (no API key required)",
     )
 
     args = parser.parse_args()
