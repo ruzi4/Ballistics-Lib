@@ -2,8 +2,7 @@ add_executable(realtime_demo realtime_demo.cpp)
 target_link_libraries(realtime_demo PRIVATE ballistics)
 
 add_executable(fire_control_async fire_control_async.cpp)
-find_package(Threads REQUIRED)
-target_link_libraries(fire_control_async PRIVATE ballistics Threads::Threads)
+target_link_libraries(fire_control_async PRIVATE ballistics)
 
 # Copy munitions data next to each built binary so demos can find it
 foreach(target realtime_demo fire_control_async)
@@ -50,7 +49,6 @@ add_executable(ballistics_renderer renderer.cpp)
 target_link_libraries(ballistics_renderer PRIVATE
     ballistics
     raylib
-    Threads::Threads
 )
 
 # raygui is header-only; just add its src/ directory to the include path

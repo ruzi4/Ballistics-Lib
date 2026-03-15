@@ -8,3 +8,4 @@
 #include "ballistics/munition.hpp"
 #include "ballistics/trajectory.hpp"
 #include "ballistics/fire_control.hpp"
+#include "ballistics/async_solver.hpp"

@@ -2090,6 +2090,205 @@ static void test_ground_start_upward() {
 }
 
 // ---------------------------------------------------------------------------
+// Synchronous solve() function
+// ---------------------------------------------------------------------------
+static void test_solve_static_target() {
+    SECTION("solve: static target returns valid solution with trajectory");
+
+    AtmosphericConditions atm = still_atm();
+    MunitionSpec m = drag_munition();
+
+    SolveParams sp;
+    sp.launcher_pos    = { 0.0, 0.0, 0.0 };
+    sp.target_pos      = { 300.0, 400.0, 0.0 };  // 500 m range
+    sp.target_moving   = false;
+    sp.munition        = m;
+    sp.atmosphere      = atm;
+    sp.muzzle_speed_ms = 600.0;
+
+    SolveResult res = solve(sp);
+
+    CHECK(res.valid);
+    CHECK(res.elevation_deg > 0.0);
+    CHECK(res.elevation_deg < 45.0);
+    CHECK(res.flight_time_s > 0.0);
+    CHECK_NEAR(res.range_m, 500.0, 0.1);
+    CHECK(res.max_range_m > 0.0);
+    CHECK(!res.has_intercept);  // static target
+
+    // Trajectory should have multiple points
+    CHECK(res.trajectory.size() > 2);
+
+    // First trajectory point should be near the launcher
+    CHECK_NEAR(res.trajectory.front().x, 0.0, 0.1);
+    CHECK_NEAR(res.trajectory.front().y, 0.0, 0.1);
+
+    std::printf("  Static solve: elev=%.3f°  ToF=%.3f s  traj_pts=%zu  max_range=%.0f m\n",
+                res.elevation_deg, res.flight_time_s,
+                res.trajectory.size(), res.max_range_m);
+}
+
+static void test_solve_moving_target() {
+    SECTION("solve: moving target returns intercept solution");
+
+    MunitionLibrary lib;
+    bool loaded = false;
+    for (const char* p : {"data/munitions.json",
+                           "../data/munitions.json",
+                           "../../data/munitions.json"}) {
+        try { lib.load(p); loaded = true; break; }
+        catch (const std::runtime_error&) {}
+    }
+    if (!loaded) {
+        std::printf("  Skipped: munitions file not found\n");
+        return;
+    }
+
+    AtmosphericConditions atm = isa_conditions(0.0);
+
+    SolveParams sp;
+    sp.launcher_pos         = { 0.0, 0.0, 0.0 };
+    sp.target_pos           = { 0.0, 400.0, 0.0 };
+    sp.target_velocity      = { 15.0, 0.0, 0.0 };
+    sp.target_moving        = true;
+    sp.current_azimuth_deg  = 0.0;
+    sp.current_elevation_deg = 0.0;
+    sp.slew.yaw_deg_per_s   = 25.0;
+    sp.slew.pitch_deg_per_s = 25.0;
+    sp.munition             = lib.get("7.62x51_m80_147gr");
+    sp.atmosphere           = atm;
+    sp.muzzle_speed_ms      = 853.0;
+
+    SolveResult res = solve(sp);
+
+    CHECK(res.valid);
+    CHECK(res.has_intercept);
+    CHECK(res.lead_distance_m > 0.0);
+    CHECK(res.intercept_point.x > sp.target_pos.x);  // lead is East
+    CHECK(res.trajectory.size() > 2);
+    CHECK(res.azimuth_deg > 0.0);  // must lead East of North
+
+    std::printf("  Moving solve: az=%.2f°  el=%.3f°  lead=%.1f m  slew=%.2f s  iters=%d\n",
+                res.azimuth_deg, res.elevation_deg,
+                res.lead_distance_m, res.slew_time_s, res.intercept_iters);
+}
+
+static void test_solve_out_of_range() {
+    SECTION("solve: returns valid=false when target is out of range");
+
+    SolveParams sp;
+    sp.launcher_pos    = { 0.0, 0.0, 0.0 };
+    sp.target_pos      = { 0.0, 50000.0, 0.0 };  // 50 km — way out of range
+    sp.target_moving   = false;
+    sp.munition        = drag_munition();
+    sp.atmosphere      = still_atm();
+    sp.muzzle_speed_ms = 600.0;
+
+    SolveResult res = solve(sp);
+    CHECK(!res.valid);
+    CHECK(res.trajectory.empty());
+}
+
+static void test_solve_too_close() {
+    SECTION("solve: returns valid=false when target is at launcher");
+
+    SolveParams sp;
+    sp.launcher_pos    = { 0.0, 0.0, 0.0 };
+    sp.target_pos      = { 0.0, 0.5, 0.0 };  // < 1 m
+    sp.target_moving   = false;
+    sp.munition        = drag_munition();
+    sp.atmosphere      = still_atm();
+    sp.muzzle_speed_ms = 600.0;
+
+    SolveResult res = solve(sp);
+    CHECK(!res.valid);
+}
+
+// ---------------------------------------------------------------------------
+// AsyncSolver
+// ---------------------------------------------------------------------------
+static void test_async_solver() {
+    SECTION("AsyncSolver: request → poll → result cycle");
+
+    SolveParams sp;
+    sp.launcher_pos    = { 0.0, 0.0, 0.0 };
+    sp.target_pos      = { 300.0, 400.0, 0.0 };
+    sp.target_moving   = false;
+    sp.munition        = drag_munition();
+    sp.atmosphere      = still_atm();
+    sp.muzzle_speed_ms = 600.0;
+
+    AsyncSolver solver;
+
+    // Before any request, result is default (valid=false)
+    CHECK(!solver.result().valid);
+    CHECK(!solver.computing());
+
+    // Submit a request
+    solver.request(sp);
+    CHECK(solver.computing());
+
+    // Poll until complete (with a timeout)
+    auto t0 = std::chrono::high_resolution_clock::now();
+    while (solver.computing()) {
+        solver.poll();
+        auto t1 = std::chrono::high_resolution_clock::now();
+        double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        if (elapsed_ms > 10000.0) break;  // 10 s safety timeout
+    }
+
+    CHECK(!solver.computing());
+    CHECK(solver.result().valid);
+    CHECK(solver.result().trajectory.size() > 2);
+    CHECK_NEAR(solver.result().range_m, 500.0, 0.1);
+
+    std::printf("  AsyncSolver: valid=%s  elev=%.3f°  traj_pts=%zu\n",
+                solver.result().valid ? "true" : "false",
+                solver.result().elevation_deg,
+                solver.result().trajectory.size());
+}
+
+static void test_async_solver_queuing() {
+    SECTION("AsyncSolver: queued request replaces previous");
+
+    SolveParams sp1;
+    sp1.launcher_pos    = { 0.0, 0.0, 0.0 };
+    sp1.target_pos      = { 0.0, 300.0, 0.0 };
+    sp1.target_moving   = false;
+    sp1.munition        = drag_munition();
+    sp1.atmosphere      = still_atm();
+    sp1.muzzle_speed_ms = 600.0;
+
+    SolveParams sp2 = sp1;
+    sp2.target_pos = { 0.0, 200.0, 0.0 };  // different range
+
+    AsyncSolver solver;
+    solver.request(sp1);           // starts computing
+    solver.request(sp2);           // should be queued
+
+    // Wait for BOTH solves to complete (first + queued)
+    auto t0 = std::chrono::high_resolution_clock::now();
+    int completions = 0;
+    while (completions < 2) {
+        bool was_computing = solver.computing();
+        solver.poll();
+        // Detect a completion transition
+        if (was_computing && !solver.computing())
+            ++completions;
+        auto elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::high_resolution_clock::now() - t0).count();
+        if (elapsed_ms > 10000.0) break;  // 10 s safety timeout
+    }
+
+    // The final result should match the second (queued) request
+    CHECK(solver.result().valid);
+    CHECK_NEAR(solver.result().range_m, 200.0, 1.0);
+
+    std::printf("  AsyncSolver queuing: final range=%.0f m (expected 200)\n",
+                solver.result().range_m);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -2147,6 +2346,14 @@ int main() {
     test_munition_spec_edge_cases();
     test_invalid_dt_throws();
     test_ground_start_upward();
+
+    // Async solver tests
+    test_solve_static_target();
+    test_solve_moving_target();
+    test_solve_out_of_range();
+    test_solve_too_close();
+    test_async_solver();
+    test_async_solver_queuing();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);

@@ -78,7 +78,8 @@ For full documentation of controls and the GUI see
   launcher slew time from `launcher_config.json`) and shows lead distance
 - Left-hand GUI panel: munition dropdown, muzzle speed slider, launcher and
   target position sliders, moving-target controls, live fire-solution readout
-- Background solver thread keeps the renderer responsive during the 5–100 ms
+- Uses the library's `AsyncSolver` for non-blocking fire-solution computation
+  on a background thread, keeping the renderer responsive during the 5–100 ms
   solve time
 - Right-mouse drag to orbit; scroll wheel to zoom; middle-mouse drag to pan
 - **View Focus** dropdown to snap the orbit centre to the launcher, target, or

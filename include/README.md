@@ -95,6 +95,32 @@ Targeting and pre-computed range tables.
 
 ---
 
+### `ballistics/async_solver.hpp`
+Non-blocking fire-control solver for game loops.
+
+- **`SolveParams`** — all inputs for a single engagement: `launcher_pos`,
+  `target_pos`, `target_velocity`, `target_moving` flag,
+  `current_azimuth_deg`, `current_elevation_deg`, `slew` rates,
+  `munition`, `atmosphere`, `muzzle_speed_ms`
+- **`SolveResult`** — full solver output: `valid`, `azimuth_deg`,
+  `elevation_deg`, `flight_time_s`, `range_m`, `max_range_m`, `alt_diff_m`,
+  `trajectory` (`std::vector<Vec3>` in world coords), plus moving-target
+  fields: `has_intercept`, `intercept_point`, `lead_distance_m`,
+  `slew_time_s`, `intercept_iters`
+- **`solve(params)`** → `SolveResult` — synchronous solver; computes
+  diagnostic max-range table, dispatches to `solve_elevation` or
+  `solve_moving_target_slewed`, and generates the trajectory arc.
+  Cost: 5–500 ms — intended for background-thread use.
+- **`AsyncSolver`** — non-blocking wrapper for 60 Hz game loops:
+  - `request(params)` — launch a background solve; queues if one is in flight
+  - `poll()` — call once per frame; installs completed results and starts
+    queued requests
+  - `result()` → `const SolveResult&` — latest result (default `valid=false`
+    until the first solve completes)
+  - `computing()` — true while a background solve is running
+
+---
+
 ### `ballistics/munition.hpp`
 Projectile specification.
 

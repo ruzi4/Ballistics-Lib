@@ -25,11 +25,9 @@
 #include <ballistics/ballistics.hpp>
 #include <ballistics/math/math_constants.hpp>
 #include <nlohmann/json.hpp>
-#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <fstream>
-#include <future>
 #include <string>
 #include <vector>
 
@@ -78,155 +76,14 @@ static void begin_mode3d_ex(Camera3D cam,
 }
 
 // ---------------------------------------------------------------------------
-// Data shared between background solver and render thread
+// Trajectory conversion helper: ballistics Vec3 → raylib Vector3
 // ---------------------------------------------------------------------------
-struct SolveResult {
-    bool   valid         = false;
-    double azimuth_deg   = 0.0;
-    double elevation_deg = 0.0;
-    double flight_time_s = 0.0;
-    double range_m       = 0.0;
-    double max_range_m   = 0.0;  // max achievable range (for diagnostics)
-    double alt_diff_m    = 0.0;  // launcher altitude - target altitude
-    std::vector<Vector3> traj;   // trajectory points in raylib coords
-    // Moving-target intercept extras
-    bool   has_intercept    = false;
-    Vec3   intercept_point  = {};  // ballistics coords
-    double lead_distance_m  = 0.0;
-    double slew_time_s      = 0.0; // estimated launcher slew time before shot (s)
-    int    intercept_iters  = 0;
-};
-
-struct SolveParams {
-    Vec3                  launcher_pos;
-    Vec3                  target_pos;
-    Vec3                  target_velocity;        // m/s, ballistics coords; zero = stationary
-    bool                  target_moving = false;
-    double                current_azimuth_deg   = 0.0;  // current physical launcher az
-    double                current_elevation_deg = 0.0;  // current physical launcher el
-    LauncherSlew          slew;                          // from launcher_config.json
-    MunitionSpec          munition;
-    AtmosphericConditions atmo;
-    double                muzzle_speed;
-};
-
-// ---------------------------------------------------------------------------
-// Background: compute fire solution + collect full trajectory arc
-// ---------------------------------------------------------------------------
-static SolveResult solve_async(const SolveParams& p)
+static std::vector<Vector3> traj_to_rl(const std::vector<Vec3>& pts)
 {
-    SolveResult out;
-
-    const double dx      = p.target_pos.x - p.launcher_pos.x;
-    const double dy      = p.target_pos.y - p.launcher_pos.y;
-    const double range_m = std::sqrt(dx * dx + dy * dy);
-    out.range_m = range_m;
-
-    out.alt_diff_m = p.launcher_pos.z - p.target_pos.z;
-
-    if (range_m < 1.0) return out; // launcher and target too close
-
-    TrajectorySimulator sim(p.munition, p.atmo);
-
-    // Build a quick table to find max range for diagnostics (aim toward
-    // current target; close enough for the diagnostic display).
-    const double az_diag      = std::atan2(dx, dy) * kRadToDeg;
-    const double launch_height = p.launcher_pos.z - p.target_pos.z;
-    const double target_alt    = p.target_pos.z;
-
-    FireControlTable diag_table;
-    diag_table.build(sim, p.muzzle_speed, az_diag, launch_height,
-                     false, 50, target_alt);
-    out.max_range_m = diag_table.max_range_m();
-
-    // -------------------------------------------------------------------
-    // Choose solver: moving-target intercept or static elevation solve
-    // -------------------------------------------------------------------
-    double       used_az  = az_diag;
-    double       used_el  = 0.0;
-    double       used_tof = 0.0;
-    Vec3         aim_pos  = p.target_pos; // position the trajectory ends at
-
-    if (p.target_moving) {
-        // Slew-aware intercept solve: accounts for target velocity AND the
-        // time the launcher takes to rotate to the firing angle.
-        InterceptSolution isol = solve_moving_target_slewed(
-            sim,
-            p.launcher_pos,
-            p.current_azimuth_deg,
-            p.current_elevation_deg,
-            p.target_pos,
-            p.target_velocity,
-            p.muzzle_speed,
-            p.slew,
-            /*high_angle=*/false,
-            /*tolerance_m=*/0.5,
-            /*max_iterations=*/10);
-
-        if (!isol.valid) return out;
-
-        used_az  = isol.azimuth_deg;
-        used_el  = isol.fire.elevation_deg;
-        used_tof = isol.fire.flight_time_ms / 1000.0;
-        aim_pos  = isol.intercept_point;
-
-        out.has_intercept   = true;
-        out.intercept_point = isol.intercept_point;
-        out.lead_distance_m = isol.lead_distance_m;
-        out.slew_time_s     = isol.slew_time_s;
-        out.intercept_iters = isol.iterations;
-    } else {
-        // Standard static-target solve
-        LauncherOrientation orient;
-        orient.azimuth_deg = az_diag;
-
-        FireSolution sol = solve_elevation(sim, orient, range_m,
-                                           p.muzzle_speed,
-                                           launch_height, /*high_angle=*/false,
-                                           /*tolerance_m=*/0.5,
-                                           target_alt);
-        if (!sol.valid) return out;
-
-        used_az  = az_diag;
-        used_el  = sol.elevation_deg;
-        used_tof = sol.flight_time_ms / 1000.0;
-    }
-
-    out.valid         = true;
-    out.azimuth_deg   = used_az;
-    out.elevation_deg = used_el;
-    out.flight_time_s = used_tof;
-
-    // Collect trajectory points in absolute world coordinates
-    const double az_r = used_az * kDegToRad;
-    const double el_r = used_el * kDegToRad;
-    const double v    = p.muzzle_speed;
-
-    ProjectileState init;
-    init.position = p.launcher_pos;
-    init.velocity = {
-        v * std::sin(az_r) * std::cos(el_r),   // East  (+x)
-        v * std::cos(az_r) * std::cos(el_r),   // North (+y)
-        v * std::sin(el_r)                      // Up    (+z)
-    };
-    init.time = 0.0;
-
-    SimulationConfig cfg;
-    cfg.dt       = 1.0 / 60.0;                            // 60 Hz — fine for visualization
-    cfg.use_rk4  = true;
-    cfg.max_time = used_tof * 1.5 + 2.0;
-    // When the launcher is below the target the ascending solution reaches the
-    // target plane on the way UP.  Setting ground_z to target altitude would
-    // cause simulate() to terminate immediately (launcher starts below ground_z).
-    // Use the lower of launcher and target altitude so the floor is always
-    // below the launch point; the max_time cap stops the trajectory near impact.
-    cfg.ground_z = std::min(p.launcher_pos.z, aim_pos.z) - 0.5;
-
-    auto states = sim.simulate(init, cfg);
-    out.traj.reserve(states.size());
-    for (const auto& s : states)
-        out.traj.push_back(to_rl(s.position));
-
+    std::vector<Vector3> out;
+    out.reserve(pts.size());
+    for (const auto& p : pts)
+        out.push_back(to_rl(p));
     return out;
 }
 
@@ -374,12 +231,11 @@ int main()
     float phys_el = 0.f;
 
     // -----------------------------------------------------------------------
-    // Async fire-solution state
+    // Async fire-solution state (uses library AsyncSolver)
     // -----------------------------------------------------------------------
-    std::future<SolveResult> pending;
-    SolveResult current;
-    bool computing = false;
-    bool dirty     = true;
+    AsyncSolver solver;
+    bool dirty = true;
+    std::vector<Vector3> traj_rl;  // trajectory cache in raylib coords
 
     // Previous values — used to detect changes and trigger recompute
     float p_lx = lx - 1.f, p_ly = ly, p_lz = lz;
@@ -517,17 +373,15 @@ int main()
         }
 
         // -------------------------------------------------------------------
-        // Kick off / collect async fire solution
+        // Kick off / collect async fire solution (via library AsyncSolver)
         // -------------------------------------------------------------------
-        if (!computing && dirty) {
-            dirty     = false;
-            computing = true;
+        if (dirty) {
+            dirty = false;
 
             SolveParams sp;
             sp.launcher_pos   = { lx, ly, lz };
             sp.target_pos     = { tx, ty, tz };
             sp.target_moving  = target_moving;
-            // Compute target velocity vector from speed + heading + direction
             if (target_moving) {
                 const float yaw_r = target_yaw * (float)kDegToRad;
                 const float dir   = target_travel_fwd ? 1.f : -1.f;
@@ -539,24 +393,25 @@ int main()
             } else {
                 sp.target_velocity = { 0.0, 0.0, 0.0 };
             }
-            // Pass current physical launcher orientation so the slewed solver
-            // can compute how long it takes to rotate to the firing angle.
             sp.current_azimuth_deg   = (double)phys_az;
             sp.current_elevation_deg = (double)phys_el;
             sp.slew                  = slew_cfg;
-            sp.munition     = lib.get(mun_names[(size_t)mun_idx]);
-            sp.atmo         = atmo;
-            sp.muzzle_speed = (double)muzzle_speed;
+            sp.munition       = lib.get(mun_names[(size_t)mun_idx]);
+            sp.atmosphere     = atmo;
+            sp.muzzle_speed_ms = (double)muzzle_speed;
 
-            pending = std::async(std::launch::async, solve_async, sp);
+            solver.request(sp);
         }
 
-        if (computing && pending.valid()) {
-            if (pending.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                current   = pending.get();
-                computing = false;
-            }
+        {
+            const bool was_computing = solver.computing();
+            solver.poll();
+            // Update raylib trajectory cache when a new result arrives
+            if (was_computing && !solver.computing())
+                traj_rl = traj_to_rl(solver.result().trajectory);
         }
+
+        const SolveResult& current = solver.result();
 
         // -------------------------------------------------------------------
         // Slew physical launcher toward commanded fire-solution angles
@@ -695,10 +550,10 @@ int main()
             DrawSphere({ rl_pe.x, 0.1f, rl_pe.z }, 0.4f * traj_scale, { 200, 200, 50, 200 });
         }
 
-        if (current.valid && !current.traj.empty()) {
-            draw_trajectory(current.traj, traj_scale);
+        if (current.valid && !traj_rl.empty()) {
+            draw_trajectory(traj_rl, traj_scale);
             // Impact marker at trajectory end
-            DrawSphere(current.traj.back(), 0.55f * traj_scale, { 255, 200, 0, 255 });
+            DrawSphere(traj_rl.back(), 0.55f * traj_scale, { 255, 200, 0, 255 });
         }
 
         // Moving-target intercept: draw predicted intercept point + lead vector
@@ -730,7 +585,7 @@ int main()
         DrawText("N",  (int)scr_n.x + 3, (int)scr_n.y - 8,  15, GREEN);
         DrawText("Up", (int)scr_u.x + 3, (int)scr_u.y - 8,  15, BLUE);
 
-        if (computing)
+        if (solver.computing())
             DrawText("[ computing... ]", PANEL_W + 12, 12, 14, YELLOW);
 
         EndScissorMode();
@@ -960,7 +815,7 @@ int main()
                 DrawText(TextFormat("Lead dist : %7.1f m", current.lead_distance_m), mx, y, 14, lc); y += 20;
                 DrawText(TextFormat("Slew time : %7.2f s", current.slew_time_s),     mx, y, 14, lc); y += 20;
             }
-        } else if (computing) {
+        } else if (solver.computing()) {
             DrawText("  Computing...", mx, y, 14, YELLOW); y += 20;
         } else {
             const Color err_col = { 220, 80, 80, 255 };

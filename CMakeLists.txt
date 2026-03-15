@@ -47,6 +47,7 @@ set(BALLISTICS_INCLUDES
     include/${PROJECT_NAME}/munition.hpp
     include/${PROJECT_NAME}/trajectory.hpp
     include/${PROJECT_NAME}/fire_control.hpp
+    include/${PROJECT_NAME}/async_solver.hpp
     include/${PROJECT_NAME}/ballistics.hpp
     include/${PROJECT_NAME}/math/vec3.hpp
     include/${PROJECT_NAME}/math/math_constants.hpp
@@ -58,6 +59,7 @@ set(BALLISTICS_SOURCES
     src/munition.cpp
     src/trajectory.cpp
     src/fire_control.cpp
+    src/async_solver.cpp
 )
 
 add_library(ballistics ${BALLISTICS_SOURCES})
@@ -70,7 +72,8 @@ target_include_directories(ballistics
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json)
+find_package(Threads REQUIRED)
+target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 
 target_include_directories (${PROJECT_NAME}
     PUBLIC include
