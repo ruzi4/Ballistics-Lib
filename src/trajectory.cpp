@@ -56,6 +56,14 @@ void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
 {
     dpos_dt = vel;
 
+    // Fast path: skip drag computation entirely for vacuum projectiles (Cd=0).
+    // Avoids the wind subtraction, norm_sq, sqrt, and three multiplications
+    // per call (= 4 calls per RK4 step, so 16 fewer FP ops per step).
+    if (drag_k_ == 0.0) {
+        dvel_dt = Vec3{0.0, 0.0, kGravity};
+        return;
+    }
+
     // Velocity relative to the wind
     const Vec3   v_rel     = vel - atmosphere_.wind.velocity_ms;
     const double v_rel_sq  = v_rel.norm_sq();

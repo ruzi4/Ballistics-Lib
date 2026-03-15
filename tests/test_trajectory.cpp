@@ -1880,6 +1880,216 @@ static void test_moving_target_out_of_range() {
 }
 
 // ---------------------------------------------------------------------------
+// Symplectic Euler integrator
+// ---------------------------------------------------------------------------
+static void test_step_euler() {
+    SECTION("step_euler: produces valid trajectory, less accurate than RK4");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    ProjectileState state;
+    state.position = Vec3{0.0, 0.0, 100.0};
+    state.velocity = Vec3{300.0, 0.0, 200.0};
+    state.time     = 0.0;
+
+    const double dt = 1.0 / 240.0;
+
+    // Run 240 Euler steps (1 second)
+    ProjectileState euler_state = state;
+    for (int i = 0; i < 240; ++i)
+        euler_state = sim.step_euler(euler_state, dt);
+
+    // Run 240 RK4 steps (1 second)
+    ProjectileState rk4_state = state;
+    for (int i = 0; i < 240; ++i)
+        rk4_state = sim.step_rk4(rk4_state, dt);
+
+    // Both should advance time by ~1 second
+    CHECK_NEAR(euler_state.time, 1.0, 1e-10);
+    CHECK_NEAR(rk4_state.time,  1.0, 1e-10);
+
+    // Euler should produce a different (less accurate) result
+    const double pos_diff = (euler_state.position - rk4_state.position).norm();
+    std::printf("  RK4 vs Euler position diff after 1s: %.3f m\n", pos_diff);
+    // They should differ measurably but both be physically reasonable
+    CHECK(pos_diff > 0.0);
+    CHECK(pos_diff < 50.0); // not wildly divergent at 240 Hz
+
+    // Euler batch simulation via SimulationConfig
+    SimulationConfig cfg;
+    cfg.dt       = dt;
+    cfg.max_time = 30.0;
+    cfg.use_rk4  = false;  // Use Euler
+
+    auto states = sim.simulate(state, cfg);
+    CHECK(!states.empty());
+    CHECK(states.back().position.z <= 0.01);  // should land
+}
+
+// ---------------------------------------------------------------------------
+// set_atmosphere: changing atmosphere mid-simulation
+// ---------------------------------------------------------------------------
+static void test_set_atmosphere() {
+    SECTION("set_atmosphere: changing conditions affects drag");
+
+    MunitionSpec m = drag_munition();
+    AtmosphericConditions sea_level = isa_conditions(0.0);
+    TrajectorySimulator sim(m, sea_level);
+
+    ProjectileState state;
+    state.position = Vec3{0.0, 0.0, 0.0};
+    state.velocity = Vec3{500.0, 0.0, 300.0};
+    state.time     = 0.0;
+
+    // Step once at sea level density
+    ProjectileState after_sea = sim.step(state, 1.0 / 240.0);
+
+    // Switch to high altitude (much lower density)
+    AtmosphericConditions high_alt = isa_conditions(8000.0);
+    sim.set_atmosphere(high_alt);
+
+    // Step once at high altitude density
+    ProjectileState after_alt = sim.step(state, 1.0 / 240.0);
+
+    // Lower density = less drag = higher speed retained
+    CHECK(after_alt.velocity.norm() > after_sea.velocity.norm());
+
+    // Verify the drag constant was updated
+    CHECK(sim.drag_k() > 0.0);
+
+    // Restore and verify
+    sim.set_atmosphere(sea_level);
+    ProjectileState after_restore = sim.step(state, 1.0 / 240.0);
+    CHECK_NEAR(after_restore.velocity.x, after_sea.velocity.x, 1e-10);
+}
+
+// ---------------------------------------------------------------------------
+// MunitionLibrary::clear
+// ---------------------------------------------------------------------------
+static void test_munition_library_clear() {
+    SECTION("MunitionLibrary: clear() empties the library");
+
+    const std::string json = R"({
+        "munitions": [
+            {
+                "name": "temp_round",
+                "mass_kg": 0.01,
+                "density_kg_m3": 11000,
+                "reference_area_m2": 1e-4,
+                "drag_coefficient": 0.30,
+                "muzzle_velocity_ms": 900.0
+            }
+        ]
+    })";
+
+    MunitionLibrary lib;
+    lib.load_from_string(json);
+    CHECK(lib.size() == 1);
+    CHECK(lib.contains("temp_round"));
+
+    lib.clear();
+    CHECK(lib.size() == 0);
+    CHECK(!lib.contains("temp_round"));
+
+    // get() should throw after clear
+    bool threw = false;
+    try { (void)lib.get("temp_round"); }
+    catch (const std::out_of_range&) { threw = true; }
+    CHECK(threw);
+}
+
+// ---------------------------------------------------------------------------
+// MunitionSpec edge cases
+// ---------------------------------------------------------------------------
+static void test_munition_spec_edge_cases() {
+    SECTION("MunitionSpec: ballistic_coefficient and volume edge cases");
+
+    MunitionSpec m;
+    m.mass_kg           = 0.01;
+    m.density_kg_m3     = 11000.0;
+    m.reference_area_m2 = 1e-4;
+    m.drag_coefficient  = 0.0;  // Vacuum sentinel
+
+    // BC returns 0 when Cd is 0
+    CHECK_NEAR(m.ballistic_coefficient(), 0.0, 1e-15);
+
+    // BC returns 0 when area is 0
+    m.drag_coefficient  = 0.3;
+    m.reference_area_m2 = 0.0;
+    CHECK_NEAR(m.ballistic_coefficient(), 0.0, 1e-15);
+
+    // Volume returns 0 when density is 0
+    m.density_kg_m3 = 0.0;
+    CHECK_NEAR(m.volume_m3(), 0.0, 1e-15);
+}
+
+// ---------------------------------------------------------------------------
+// SimulationConfig: invalid dt throws
+// ---------------------------------------------------------------------------
+static void test_invalid_dt_throws() {
+    SECTION("simulate: throws on dt <= 0");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(drag_munition(), atm);
+
+    ProjectileState initial;
+    initial.position = Vec3{0.0, 0.0, 10.0};
+    initial.velocity = Vec3{100.0, 0.0, 0.0};
+
+    // dt = 0
+    {
+        SimulationConfig cfg;
+        cfg.dt = 0.0;
+        bool threw = false;
+        try { (void)sim.simulate(initial, cfg); }
+        catch (const std::invalid_argument&) { threw = true; }
+        CHECK(threw);
+    }
+
+    // dt < 0
+    {
+        SimulationConfig cfg;
+        cfg.dt = -1.0;
+        bool threw = false;
+        try { (void)sim.simulate(initial, cfg); }
+        catch (const std::invalid_argument&) { threw = true; }
+        CHECK(threw);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ground intersection: projectile starting on the ground with upward velocity
+// ---------------------------------------------------------------------------
+static void test_ground_start_upward() {
+    SECTION("simulate: projectile starting at ground with upward velocity flies");
+
+    AtmosphericConditions atm = still_atm();
+    TrajectorySimulator sim(vacuum_munition(), atm);
+
+    ProjectileState initial;
+    initial.position = Vec3{0.0, 0.0, 0.0};  // exactly on ground
+    initial.velocity = Vec3{100.0, 0.0, 50.0}; // upward velocity
+
+    SimulationConfig cfg;
+    cfg.dt       = 1.0 / 240.0;
+    cfg.max_time = 30.0;
+    cfg.ground_z = 0.0;
+
+    auto states = sim.simulate(initial, cfg);
+    CHECK(states.size() > 2);  // should fly, not terminate immediately
+
+    // Should reach an apex above ground
+    double max_z = 0.0;
+    for (const auto& s : states)
+        if (s.position.z > max_z) max_z = s.position.z;
+    CHECK(max_z > 10.0);
+
+    // Should land back at ground level
+    CHECK(states.back().position.z <= 0.01);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1929,6 +2139,14 @@ int main() {
     test_moving_target_slewed_basic();
     test_moving_target_slewed_elevated();
     test_moving_target_out_of_range();
+
+    // Coverage gap tests
+    test_step_euler();
+    test_set_atmosphere();
+    test_munition_library_clear();
+    test_munition_spec_edge_cases();
+    test_invalid_dt_throws();
+    test_ground_start_upward();
 
     std::printf("\n================================\n");
     std::printf("Passed: %d   Failed: %d\n", g_pass, g_fail);
