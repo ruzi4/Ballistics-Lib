@@ -19,6 +19,11 @@ interactive applications.
 - **Pre-computed range tables** — `FireControlTable` sweeps elevation angles once
   (~50 – 300 ms, suitable for a background thread) and serves per-frame lookups in
   under 1 µs via binary search with linear interpolation.
+- **Async solver** — `AsyncSolver` wraps the fire-control solvers in a non-blocking
+  interface designed for 60 Hz game loops. Call `request()` when parameters change,
+  `poll()` every frame, and read `result()` — the heavy computation runs on a
+  background thread. Supports both static and moving-target engagements with
+  automatic trajectory arc generation for visualisation.
 - **ISA atmosphere model** — International Standard Atmosphere from sea level to
   20 km; moist-air density correction via the Magnus formula. Altitude-varying
   density can be applied per-step via a callback.
@@ -106,6 +111,33 @@ if (sol.valid)
            sol.elevation_deg, sol.flight_time_ms);
 ```
 
+### Game-loop integration (AsyncSolver)
+
+```cpp
+#include <ballistics/ballistics.hpp>
+using namespace ballistics;
+
+// Set up parameters once
+SolveParams params;
+params.launcher_pos    = { 0.0, 0.0, 0.0 };
+params.target_pos      = { 0.0, 600.0, 0.0 };
+params.munition        = lib.get("5.56x45_m855_62gr");
+params.atmosphere      = isa_conditions(0.0);
+params.muzzle_speed_ms = 930.0;
+
+AsyncSolver solver;
+
+// In your update loop (60 Hz):
+solver.request(params);     // non-blocking — launches background thread
+solver.poll();              // check for completion each frame
+
+const SolveResult& r = solver.result();
+if (r.valid) {
+    aim_launcher(r.azimuth_deg, r.elevation_deg);
+    draw_arc(r.trajectory);  // std::vector<Vec3> in world coords
+}
+```
+
 ---
 
 ## Repository layout
@@ -128,6 +160,9 @@ if (sol.valid)
 | `solve_moving_target()` | (max_iterations + 1) × `solve_elevation()` |
 | `FireControlTable::build()` | 50 – 300 ms (async-friendly) |
 | `FireControlTable::lookup()` | < 1 µs (O(log N) binary search) |
+| `solve()` (static target) | 5 – 100 ms (use via `AsyncSolver`) |
+| `solve()` (moving target) | 50 – 500 ms (use via `AsyncSolver`) |
+| `AsyncSolver::poll()` | < 1 µs per frame |
 
 ---
 

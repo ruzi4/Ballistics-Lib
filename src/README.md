@@ -8,8 +8,9 @@ Implementation files for the `ballistics` static library.
 | `munition.cpp` | JSON loading and validation for `MunitionSpec` / `MunitionLibrary` |
 | `trajectory.cpp` | RK4 and symplectic-Euler integrators, batch simulation, ground intersection |
 | `fire_control.cpp` | `solve_elevation`, `solve_moving_target`, `solve_moving_target_slewed`, and `FireControlTable` |
+| `async_solver.cpp` | `solve()` synchronous solver and `AsyncSolver` non-blocking wrapper for game loops |
 
-All four files are compiled into a single static library target (`ballistics`) by
+All five files are compiled into a single static library target (`ballistics`) by
 the root `CMakeLists.txt`. They have no public symbols beyond what is declared in
 the corresponding headers under `include/ballistics/`.
 
@@ -61,5 +62,17 @@ by that time, re-invokes `solve_moving_target`, and iterates until |ΔT_s| < 10 
 timestep (1/120 s) for speed, simulates each, then extracts the monotone
 range-elevation curve. `lookup` performs binary search with linear interpolation
 in O(log N) time.
+
+### `async_solver.cpp`
+`solve()` encapsulates the full fire-control pipeline: it computes range and
+azimuth from launcher to target, builds a quick diagnostic table for max-range
+reporting, dispatches to `solve_elevation` (static target) or
+`solve_moving_target_slewed` (moving target), and generates the trajectory arc
+at 60 Hz for visualisation.
+
+`AsyncSolver` wraps `solve()` in a `std::async` background thread with a
+request/poll/result interface suitable for 60 Hz game loops. Requests that arrive
+while a solve is in flight are queued and started automatically when the current
+solve completes (checked during `poll()`).
 
 See [`include/README.md`](../include/README.md) for the full public API.

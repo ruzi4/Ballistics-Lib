@@ -47,6 +47,7 @@ set(BALLISTICS_INCLUDES
     include/${PROJECT_NAME}/munition.hpp
     include/${PROJECT_NAME}/trajectory.hpp
     include/${PROJECT_NAME}/fire_control.hpp
+    include/${PROJECT_NAME}/async_solver.hpp
     include/${PROJECT_NAME}/ballistics.hpp
     include/${PROJECT_NAME}/math/vec3.hpp
     include/${PROJECT_NAME}/math/math_constants.hpp
@@ -58,6 +59,7 @@ set(BALLISTICS_SOURCES
     src/munition.cpp
     src/trajectory.cpp
     src/fire_control.cpp
+    src/async_solver.cpp
 )
 
 add_library(ballistics ${BALLISTICS_SOURCES})
@@ -70,20 +72,26 @@ target_include_directories(ballistics
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json)
+find_package(Threads REQUIRED)
+target_link_libraries(${PROJECT_NAME} PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 
 target_include_directories (${PROJECT_NAME}
     PUBLIC include
 )
 
-# Aggressive optimisation flags for real-time performance
+# Optimisation flags for real-time performance.
+#
+# -ffast-math was previously used here but is intentionally avoided:
+# it implies -ffinite-math-only (making std::isnan/isinf UB) and allows
+# FP reordering that can silently change trajectory results.  The per-step
+# cost is already ~200 ns, so the marginal gain does not justify the risk.
+#
+# -fno-math-errno and -freciprocal-math provide most of the benefit safely:
+#   -fno-math-errno  — skip setting errno on math calls (e.g. sqrt)
+#   -freciprocal-math — allow x/y → x*(1/y) where safe
 target_compile_options(ballistics PRIVATE
-    $<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -march=native -ffast-math>
-    # -ffast-math implies -ffinite-math-only; Clang then warns when
-    # nlohmann_json's headers use std::isfinite / infinity() (third-party code
-    # we cannot modify).  The warning is not actionable, so silence it.
-    $<$<CXX_COMPILER_ID:Clang>:-Wno-nan-infinity-disabled>
-    $<$<CXX_COMPILER_ID:MSVC>:/O2 /fp:fast>
+    $<$<CXX_COMPILER_ID:GNU,Clang>:-O3 -march=native -fno-math-errno -freciprocal-math>
+    $<$<CXX_COMPILER_ID:MSVC>:/O2>
 )
 
 # ---------------------------------------------------------------------------
