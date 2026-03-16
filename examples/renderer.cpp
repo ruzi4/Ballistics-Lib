@@ -531,19 +531,17 @@ int main()
         // Moving target: draw travel path
         if (target_moving && target_travel_dist > 0.f) {
             float yaw_rad = target_yaw * (float)kDegToRad;
-            Vec3 path_start = { target_origin_x, target_origin_y, 0.0 };
+            Vec3 path_start = { target_origin_x, target_origin_y, (double)tz };
             Vec3 path_end   = {
                 target_origin_x + target_travel_dist * sinf(yaw_rad),
                 target_origin_y + target_travel_dist * cosf(yaw_rad),
-                0.0
+                (double)tz
             };
             Vector3 rl_ps = to_rl(path_start);
             Vector3 rl_pe = to_rl(path_end);
-            rl_ps.y = 0.05f;
-            rl_pe.y = 0.05f;
             DrawLine3D(rl_ps, rl_pe, { 255, 100, 100, 200 });
-            DrawSphere({ rl_ps.x, 0.1f, rl_ps.z }, 0.4f * traj_scale, { 200, 200, 50, 200 });
-            DrawSphere({ rl_pe.x, 0.1f, rl_pe.z }, 0.4f * traj_scale, { 200, 200, 50, 200 });
+            DrawSphere({ rl_ps.x, rl_t.y, rl_ps.z }, 0.4f * traj_scale, { 200, 200, 50, 200 });
+            DrawSphere({ rl_pe.x, rl_t.y, rl_pe.z }, 0.4f * traj_scale, { 200, 200, 50, 200 });
         }
 
         if (current.valid && !traj_rl.empty()) {
@@ -565,9 +563,9 @@ int main()
             Vector3 ipt_ground = { rl_ipt.x, 0.04f, rl_ipt.z };
             DrawLine3D(ipt_ground, rl_ipt, { 0, 180, 180, 160 });
 
-            // Lead vector: line from current target to intercept point
-            DrawLine3D({ rl_t.x, 0.08f, rl_t.z },
-                       { ipt_ground.x, 0.08f, ipt_ground.z },
+            // Lead vector: line from current target to intercept point at target altitude
+            DrawLine3D({ rl_t.x, rl_t.y, rl_t.z },
+                       { ipt_ground.x, rl_t.y, ipt_ground.z },
                        { 0, 255, 255, 200 });
         }
 
