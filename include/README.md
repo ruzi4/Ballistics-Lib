@@ -113,8 +113,8 @@ Non-blocking fire-control solver for game loops.
   Cost: 5–500 ms — intended for background-thread use.
 - **`AsyncSolver`** — non-blocking wrapper for 60 Hz game loops:
   - `request(params)` — launch a background solve; queues if one is in flight
-  - `poll()` — call once per frame; installs completed results and starts
-    queued requests
+  - `poll()` → `bool` — call once per frame; returns `true` when a new result
+    was installed; also starts queued requests
   - `result()` → `const SolveResult&` — latest result (default `valid=false`
     until the first solve completes)
   - `computing()` — true while a background solve is running

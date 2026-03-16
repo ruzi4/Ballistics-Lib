@@ -403,13 +403,9 @@ int main()
             solver.request(sp);
         }
 
-        {
-            const bool was_computing = solver.computing();
-            solver.poll();
-            // Update raylib trajectory cache when a new result arrives
-            if (was_computing && !solver.computing())
-                traj_rl = traj_to_rl(solver.result().trajectory);
-        }
+        // Update raylib trajectory cache when a new result arrives
+        if (solver.poll())
+            traj_rl = traj_to_rl(solver.result().trajectory);
 
         const SolveResult& current = solver.result();
 
@@ -826,8 +822,8 @@ int main()
                      current.alt_diff_m), mx, y, 12, err_col); y += 16;
         }
 
-        // ---- View Focus (anchored to fixed position near panel bottom) ------
-        y = H - 50;
+        // ---- View Focus -----------------------------------------------------
+        y += 4;
         DrawText("VIEW FOCUS", mx, y, 12, sec_col); y += 16;
         const int vf_dd_y = y; // save Y for deferred dropdown draw
         y += rh + 6;

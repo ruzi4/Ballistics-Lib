@@ -118,7 +118,8 @@ public:
     /// and, if so, installs the new result.  Also starts a queued request if
     /// one is pending.
     /// Cost: < 1 µs when no solve is in flight.
-    void poll();
+    /// @returns true if a new result was installed this call.
+    bool poll();
 
     /// The most recent solve result.  Updated by poll() when a background
     /// computation completes.  Initially returns a default (valid=false) result.

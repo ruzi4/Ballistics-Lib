@@ -129,7 +129,9 @@ AsyncSolver solver;
 
 // In your update loop (60 Hz):
 solver.request(params);     // non-blocking — launches background thread
-solver.poll();              // check for completion each frame
+if (solver.poll()) {        // true when a new result was installed
+    // Update cached visuals only when result changes
+}
 
 const SolveResult& r = solver.result();
 if (r.valid) {

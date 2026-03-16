@@ -140,7 +140,7 @@ void AsyncSolver::request(const SolveParams& params)
     pending_   = std::async(std::launch::async, ballistics::solve, params);
 }
 
-void AsyncSolver::poll()
+bool AsyncSolver::poll()
 {
     if (!computing_) {
         // Start queued request if one is waiting
@@ -149,12 +149,12 @@ void AsyncSolver::poll()
             computing_ = true;
             pending_   = std::async(std::launch::async, ballistics::solve, queued_params_);
         }
-        return;
+        return false;
     }
 
-    if (!pending_.valid()) return;
+    if (!pending_.valid()) return false;
     if (pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-        return;
+        return false;
 
     // Solve finished — install new result
     current_   = pending_.get();
@@ -166,6 +166,8 @@ void AsyncSolver::poll()
         computing_ = true;
         pending_   = std::async(std::launch::async, ballistics::solve, queued_params_);
     }
+
+    return true;
 }
 
 } // namespace ballistics
