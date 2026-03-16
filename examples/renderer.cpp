@@ -55,7 +55,7 @@ static void begin_mode3d_ex(Camera3D cam,
                              float near_z, float far_z,
                              int vp_w,    int vp_h)
 {
-    rlDrawRenderBatchElement();   // flush any pending 2D batch
+    rlDrawRenderBatchActive();   // flush any pending 2D batch
 
     rlMatrixMode(RL_PROJECTION);
     rlPushMatrix();
