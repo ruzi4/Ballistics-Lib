@@ -1,6 +1,7 @@
 #pragma once
 
 #include "trajectory.hpp"
+
 #include <vector>
 
 namespace ballistics {
@@ -18,7 +19,7 @@ namespace ballistics {
 /// Horizontal orientation of the launcher (azimuth only).
 /// Elevation is the output of solve_elevation(), not an input.
 struct LauncherOrientation {
-    double azimuth_deg{0.0};  ///< Horizontal bearing to target (degrees, 0=North, CW)
+    double azimuth_deg{0.0}; ///< Horizontal bearing to target (degrees, 0=North, CW)
 };
 
 /// Physical slew (rotation) rates of the launcher mechanism.
@@ -26,8 +27,8 @@ struct LauncherOrientation {
 /// rotate from the current orientation to the required firing angle before
 /// the shot can be released.
 struct LauncherSlew {
-    double yaw_deg_per_s{25.0};    ///< Azimuth (yaw) slew rate (deg/s)
-    double pitch_deg_per_s{25.0};  ///< Elevation (pitch) slew rate (deg/s)
+    double yaw_deg_per_s{25.0};   ///< Azimuth (yaw) slew rate (deg/s)
+    double pitch_deg_per_s{25.0}; ///< Elevation (pitch) slew rate (deg/s)
 };
 
 /// Result returned by solve_elevation() and FireControlTable::lookup().
@@ -97,15 +98,14 @@ struct InterceptSolution {
 ///          @p range_m exceeds the munition's maximum range.
 ///
 /// @throws std::invalid_argument if @p muzzle_speed_ms <= 0.
-FireSolution solve_elevation(
-    const TrajectorySimulator& sim,
-    LauncherOrientation        orientation,
-    double                     range_m,
-    double                     muzzle_speed_ms,
-    double                     launch_height_m   = 0.0,
-    bool                       high_angle        = false,
-    double                     tolerance_m       = 0.1,
-    double                     target_altitude_m = 0.0);
+FireSolution solve_elevation(const TrajectorySimulator& sim,
+                             LauncherOrientation        orientation,
+                             double                     range_m,
+                             double                     muzzle_speed_ms,
+                             double                     launch_height_m   = 0.0,
+                             bool                       high_angle        = false,
+                             double                     tolerance_m       = 0.1,
+                             double                     target_altitude_m = 0.0);
 
 // ---------------------------------------------------------------------------
 // solve_moving_target — intercept fire solution for a moving target
@@ -145,15 +145,14 @@ FireSolution solve_elevation(
 /// @returns InterceptSolution with valid=true if an intercept solution was
 ///          found; valid=false if the target is out of range or the iteration
 ///          did not converge.
-InterceptSolution solve_moving_target(
-    const TrajectorySimulator& sim,
-    const Vec3&                launcher_pos,
-    const Vec3&                target_pos,
-    const Vec3&                target_velocity,
-    double                     muzzle_speed_ms,
-    bool                       high_angle    = false,
-    double                     tolerance_m   = 0.5,
-    int                        max_iterations = 10);
+InterceptSolution solve_moving_target(const TrajectorySimulator& sim,
+                                      const Vec3&                launcher_pos,
+                                      const Vec3&                target_pos,
+                                      const Vec3&                target_velocity,
+                                      double                     muzzle_speed_ms,
+                                      bool                       high_angle     = false,
+                                      double                     tolerance_m    = 0.5,
+                                      int                        max_iterations = 10);
 
 // ---------------------------------------------------------------------------
 // solve_moving_target_slewed — intercept accounting for launcher slew time
@@ -192,18 +191,17 @@ InterceptSolution solve_moving_target(
 /// @param high_angle            false = direct fire, true = plunging fire.
 /// @param tolerance_m           Inner solve_elevation() convergence threshold (m).
 /// @param max_iterations        Outer fixed-point iteration limit.
-InterceptSolution solve_moving_target_slewed(
-    const TrajectorySimulator& sim,
-    const Vec3&                launcher_pos,
-    double                     current_azimuth_deg,
-    double                     current_elevation_deg,
-    const Vec3&                target_pos,
-    const Vec3&                target_velocity,
-    double                     muzzle_speed_ms,
-    const LauncherSlew&        slew,
-    bool                       high_angle     = false,
-    double                     tolerance_m    = 0.5,
-    int                        max_iterations = 10);
+InterceptSolution solve_moving_target_slewed(const TrajectorySimulator& sim,
+                                             const Vec3&                launcher_pos,
+                                             double                     current_azimuth_deg,
+                                             double                     current_elevation_deg,
+                                             const Vec3&                target_pos,
+                                             const Vec3&                target_velocity,
+                                             double                     muzzle_speed_ms,
+                                             const LauncherSlew&        slew,
+                                             bool                       high_angle     = false,
+                                             double                     tolerance_m    = 0.5,
+                                             int                        max_iterations = 10);
 
 // ---------------------------------------------------------------------------
 // FireControlTable — O(log N) real-time lookup
@@ -272,12 +270,12 @@ public:
     ///
     /// @throws std::invalid_argument if @p muzzle_speed_ms <= 0.
     void build(const TrajectorySimulator& sim,
-               double muzzle_speed_ms,
-               double azimuth_deg       = 0.0,
-               double launch_height_m   = 0.0,
-               bool   high_angle        = false,
-               int    num_samples       = 500,
-               double target_altitude_m = 0.0);
+               double                     muzzle_speed_ms,
+               double                     azimuth_deg       = 0.0,
+               double                     launch_height_m   = 0.0,
+               bool                       high_angle        = false,
+               int                        num_samples       = 500,
+               double                     target_altitude_m = 0.0);
 
     // -------------------------------------------------------------------
     // Real-time lookup
@@ -305,12 +303,10 @@ public:
     [[nodiscard]] bool ready() const noexcept { return !entries_.empty(); }
 
     /// Raw sorted entries — useful for debug visualisation or export.
-    [[nodiscard]] const std::vector<Entry>& entries() const noexcept {
-        return entries_;
-    }
+    [[nodiscard]] const std::vector<Entry>& entries() const noexcept { return entries_; }
 
 private:
-    std::vector<Entry> entries_;  // sorted by range_m ascending
+    std::vector<Entry> entries_; // sorted by range_m ascending
 };
 
 } // namespace ballistics

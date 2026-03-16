@@ -7,7 +7,7 @@ namespace ballistics {
 /// Wind vector in world-space coordinates (m/s).
 /// Coordinate convention: x = East, y = North, z = Up.
 struct Wind {
-    Vec3 velocity_ms;  ///< World-space wind velocity (m/s)
+    Vec3 velocity_ms; ///< World-space wind velocity (m/s)
 };
 
 /// All atmospheric quantities needed for drag computation at a given altitude.
@@ -44,11 +44,10 @@ double compute_air_density(double temperature_K,
 /// @param surface_pressure_Pa     Surface pressure (Pa)      [default 101325]
 /// @param relative_humidity       Fractional humidity [0,1]  [default 0]
 /// @param wind                    Ambient wind               [default zero]
-AtmosphericConditions isa_conditions(
-    double altitude_m,
-    double surface_temp_K       = 288.15,
-    double surface_pressure_Pa  = 101325.0,
-    double relative_humidity    = 0.0,
-    const Wind& wind            = {}) noexcept;
+AtmosphericConditions isa_conditions(double      altitude_m,
+                                     double      surface_temp_K      = 288.15,
+                                     double      surface_pressure_Pa = 101325.0,
+                                     double      relative_humidity   = 0.0,
+                                     const Wind& wind                = {}) noexcept;
 
 } // namespace ballistics

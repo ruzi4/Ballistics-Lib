@@ -1,0 +1,7 @@
+
+# Ignore all files in the 'build' directory
+build/**
+build_test/**
+.github/**
+.vscode/**
+rag/**

@@ -18,16 +18,16 @@ namespace ballistics {
 /// solve_moving_target_slewed() to account for target velocity and launcher
 /// rotation time.
 struct SolveParams {
-    Vec3                  launcher_pos;                  ///< World-space launcher position (m)
-    Vec3                  target_pos;                    ///< Current target position (m)
-    Vec3                  target_velocity;               ///< Target velocity (m/s); ignored when target_moving is false
-    bool                  target_moving{false};          ///< True = use moving-target intercept solver
-    double                current_azimuth_deg{0.0};      ///< Current physical launcher azimuth (deg)
-    double                current_elevation_deg{0.0};    ///< Current physical launcher elevation (deg)
-    LauncherSlew          slew;                          ///< Launcher yaw/pitch slew rates
-    MunitionSpec          munition;                      ///< Projectile specification
-    AtmosphericConditions atmosphere;                    ///< Atmospheric conditions at the engagement
-    double                muzzle_speed_ms{0.0};          ///< Muzzle velocity (m/s)
+    Vec3         launcher_pos;    ///< World-space launcher position (m)
+    Vec3         target_pos;      ///< Current target position (m)
+    Vec3         target_velocity; ///< Target velocity (m/s); ignored when target_moving is false
+    bool         target_moving{false};          ///< True = use moving-target intercept solver
+    double       current_azimuth_deg{0.0};      ///< Current physical launcher azimuth (deg)
+    double       current_elevation_deg{0.0};    ///< Current physical launcher elevation (deg)
+    LauncherSlew slew;                          ///< Launcher yaw/pitch slew rates
+    MunitionSpec munition;                      ///< Projectile specification
+    AtmosphericConditions atmosphere;           ///< Atmospheric conditions at the engagement
+    double                muzzle_speed_ms{0.0}; ///< Muzzle velocity (m/s)
 };
 
 // ---------------------------------------------------------------------------
@@ -35,24 +35,24 @@ struct SolveParams {
 // ---------------------------------------------------------------------------
 /// Contains the computed fire solution, trajectory arc, and diagnostic data.
 struct SolveResult {
-    bool   valid{false};             ///< True if a solution was found
-    double azimuth_deg{0.0};         ///< Firing azimuth from launcher to impact (deg, 0=N CW)
-    double elevation_deg{0.0};       ///< Launch elevation above horizontal (deg)
-    double flight_time_s{0.0};       ///< Time of flight (seconds)
-    double range_m{0.0};             ///< Horizontal range to target (m)
-    double max_range_m{0.0};         ///< Max achievable range at current settings (m)
-    double alt_diff_m{0.0};          ///< Launcher altitude minus target altitude (m)
+    bool   valid{false};       ///< True if a solution was found
+    double azimuth_deg{0.0};   ///< Firing azimuth from launcher to impact (deg, 0=N CW)
+    double elevation_deg{0.0}; ///< Launch elevation above horizontal (deg)
+    double flight_time_s{0.0}; ///< Time of flight (seconds)
+    double range_m{0.0};       ///< Horizontal range to target (m)
+    double max_range_m{0.0};   ///< Max achievable range at current settings (m)
+    double alt_diff_m{0.0};    ///< Launcher altitude minus target altitude (m)
 
     /// Trajectory arc in world-space ballistics coordinates (x=East, y=North, z=Up).
     /// Sampled at 60 Hz from launch to impact; suitable for visualisation.
     std::vector<Vec3> trajectory;
 
     // Moving-target intercept extras
-    bool   has_intercept{false};     ///< True when the moving-target solver was used
-    Vec3   intercept_point;          ///< Predicted target position at moment of impact (m)
-    double lead_distance_m{0.0};     ///< Horizontal lead distance (m)
-    double slew_time_s{0.0};         ///< Estimated launcher slew time before shot (s)
-    int    intercept_iters{0};       ///< Number of intercept solver iterations
+    bool   has_intercept{false}; ///< True when the moving-target solver was used
+    Vec3   intercept_point;      ///< Predicted target position at moment of impact (m)
+    double lead_distance_m{0.0}; ///< Horizontal lead distance (m)
+    double slew_time_s{0.0};     ///< Estimated launcher slew time before shot (s)
+    int    intercept_iters{0};   ///< Number of intercept solver iterations
 };
 
 // ---------------------------------------------------------------------------
@@ -104,10 +104,10 @@ public:
     AsyncSolver() = default;
 
     // Non-copyable (owns a std::future)
-    AsyncSolver(const AsyncSolver&) = delete;
+    AsyncSolver(const AsyncSolver&)            = delete;
     AsyncSolver& operator=(const AsyncSolver&) = delete;
-    AsyncSolver(AsyncSolver&&) = default;
-    AsyncSolver& operator=(AsyncSolver&&) = default;
+    AsyncSolver(AsyncSolver&&)                 = default;
+    AsyncSolver& operator=(AsyncSolver&&)      = default;
 
     /// Launch a background solve with the given parameters.
     /// If a solve is already in flight, the new request is queued and will
@@ -129,11 +129,11 @@ public:
     [[nodiscard]] bool computing() const noexcept { return computing_; }
 
 private:
-    SolveResult                current_;
-    std::future<SolveResult>   pending_;
-    bool                       computing_{false};
-    bool                       queued_{false};
-    SolveParams                queued_params_;
+    SolveResult              current_;
+    std::future<SolveResult> pending_;
+    bool                     computing_{false};
+    bool                     queued_{false};
+    SolveParams              queued_params_;
 };
 
 } // namespace ballistics

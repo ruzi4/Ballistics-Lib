@@ -30,18 +30,25 @@ struct Vec3 {
     [[nodiscard]] constexpr Vec3 operator/(double s) const noexcept {
         return {x / s, y / s, z / s};
     }
-    [[nodiscard]] constexpr Vec3 operator-() const noexcept {
-        return {-x, -y, -z};
-    }
+    [[nodiscard]] constexpr Vec3 operator-() const noexcept { return {-x, -y, -z}; }
 
-    constexpr Vec3& operator+=(const Vec3& o) noexcept {
-        x += o.x; y += o.y; z += o.z; return *this;
+    constexpr Vec3&              operator+=(const Vec3& o) noexcept {
+        x += o.x;
+        y += o.y;
+        z += o.z;
+        return *this;
     }
     constexpr Vec3& operator-=(const Vec3& o) noexcept {
-        x -= o.x; y -= o.y; z -= o.z; return *this;
+        x -= o.x;
+        y -= o.y;
+        z -= o.z;
+        return *this;
     }
     constexpr Vec3& operator*=(double s) noexcept {
-        x *= s; y *= s; z *= s; return *this;
+        x *= s;
+        y *= s;
+        z *= s;
+        return *this;
     }
 
     // -----------------------------------------------------------------------
@@ -51,18 +58,10 @@ struct Vec3 {
         return x * o.x + y * o.y + z * o.z;
     }
     [[nodiscard]] constexpr Vec3 cross(const Vec3& o) const noexcept {
-        return {
-            y * o.z - z * o.y,
-            z * o.x - x * o.z,
-            x * o.y - y * o.x
-        };
+        return {y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x};
     }
-    [[nodiscard]] constexpr double norm_sq() const noexcept {
-        return x * x + y * y + z * z;
-    }
-    [[nodiscard]] double norm() const noexcept {
-        return std::sqrt(norm_sq());
-    }
+    [[nodiscard]] constexpr double norm_sq() const noexcept { return x * x + y * y + z * z; }
+    [[nodiscard]] double           norm() const noexcept { return std::sqrt(norm_sq()); }
     /// Return a unit vector in the same direction.
     /// @note  Returns Vec3{0,0,0} (the zero vector) when called on a zero-length
     ///        vector.  Callers must check for this if a zero-velocity input is

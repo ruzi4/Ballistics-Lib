@@ -13,14 +13,14 @@
 /// own job/task system, replace std::async with a job submission and call
 /// notify_build_complete() when the job finishes.
 
-#include <ballistics/ballistics.hpp>
-
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <future>
 #include <memory>
 #include <thread>
+
+#include <ballistics/ballistics.hpp>
 
 using namespace ballistics;
 using Clock = std::chrono::high_resolution_clock;
@@ -61,16 +61,14 @@ public:
     ///        task, so the caller's instance may be destroyed after this
     ///        call returns.
     void request_build(const TrajectorySimulator& sim,
-                       double muzzle_speed_ms,
-                       double azimuth_deg     = 0.0,
-                       double launch_height_m = 0.0,
-                       bool   high_angle      = false,
-                       int    num_samples     = 500)
-    {
+                       double                     muzzle_speed_ms,
+                       double                     azimuth_deg     = 0.0,
+                       double                     launch_height_m = 0.0,
+                       bool                       high_angle      = false,
+                       int                        num_samples     = 500) {
         // Don't start a new build if one is already running
         if (pending_.valid() &&
-            pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-        {
+            pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
             std::printf("[FireControlSystem] Build already in flight — request ignored.\n");
             return;
         }
@@ -80,13 +78,12 @@ public:
         // Copy sim into the closure so the async task owns its own instance.
         // The caller's sim may be a stack-local (e.g. sim2 at frame 60) that
         // is destroyed before the background task runs.
-        pending_ = std::async(std::launch::async,
-            [=, sim_copy = sim]() -> FireControlTable {
-                FireControlTable t;
-                t.build(sim_copy, muzzle_speed_ms, azimuth_deg,
-                        launch_height_m, high_angle, num_samples);
-                return t;
-            });
+        pending_ = std::async(std::launch::async, [=, sim_copy = sim]() -> FireControlTable {
+            FireControlTable t;
+            t.build(
+                sim_copy, muzzle_speed_ms, azimuth_deg, launch_height_m, high_angle, num_samples);
+            return t;
+        });
     }
 
     /// Call once per frame on the main thread.
@@ -97,12 +94,13 @@ public:
     ///        lookup().  There is no internal synchronisation — the design
     ///        assumes a single "main" thread owns this object.
     void poll() {
-        if (!pending_.valid()) return;
+        if (!pending_.valid())
+            return;
         if (pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
             return;
 
         // Build finished — install new table (main thread only, no locking needed)
-        active_ = std::make_shared<FireControlTable>(pending_.get());
+        active_               = std::make_shared<FireControlTable>(pending_.get());
         const double build_ms = elapsed_ms(build_started_, Clock::now());
         std::printf("[FireControlSystem] New table ready: max_range=%.1f m  "
                     "entries=%zu  build_time=%.1f ms\n",
@@ -114,11 +112,12 @@ public:
     /// Interpolated lookup — O(log N), safe to call every frame.
     /// Returns valid=false if the table is not ready yet or range exceeds max.
     [[nodiscard]] FireSolution lookup(double range_m) const {
-        if (!active_) return {};
+        if (!active_)
+            return {};
         return active_->lookup(range_m);
     }
 
-    [[nodiscard]] bool ready()        const noexcept { return active_ && active_->ready(); }
+    [[nodiscard]] bool   ready() const noexcept { return active_ && active_->ready(); }
     [[nodiscard]] double max_range_m() const noexcept {
         return active_ ? active_->max_range_m() : 0.0;
     }
@@ -138,7 +137,7 @@ int main(int argc, char* argv[]) {
     // -----------------------------------------------------------------------
     const std::string data_path = (argc > 1) ? argv[1] : "data/munitions.json";
 
-    MunitionLibrary lib;
+    MunitionLibrary   lib;
     try {
         lib.load(data_path);
     } catch (const std::exception& e) {
@@ -146,11 +145,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const MunitionSpec& spec        = lib.get("5.56x45_m855_62gr");
-    const double        muzzle_speed = spec.muzzle_velocity_ms;
-    AtmosphericConditions atm        = isa_conditions(0.0);
+    const MunitionSpec&   spec         = lib.get("5.56x45_m855_62gr");
+    const double          muzzle_speed = spec.muzzle_velocity_ms;
+    AtmosphericConditions atm          = isa_conditions(0.0);
 
-    TrajectorySimulator sim(spec, atm);
+    TrajectorySimulator   sim(spec, atm);
 
     // -----------------------------------------------------------------------
     // Fire control system
@@ -167,9 +166,9 @@ int main(int argc, char* argv[]) {
     // -----------------------------------------------------------------------
     // Simulate 120 frames at 60 Hz
     // -----------------------------------------------------------------------
-    const int    total_frames   = 120;
-    const double frame_dt_ms    = 1000.0 / 60.0;   // 16.67 ms
-    const double budget_us      = frame_dt_ms * 1000.0;
+    const int    total_frames = 120;
+    const double frame_dt_ms  = 1000.0 / 60.0; // 16.67 ms
+    const double budget_us    = frame_dt_ms * 1000.0;
 
     // Simulate a target moving from 100 m to 1200 m over the run
     double total_lookup_us = 0.0;
@@ -183,9 +182,9 @@ int main(int argc, char* argv[]) {
 
         // --- Fire control lookup (every frame) ---
         const double range_m = 100.0 + (1100.0 * frame) / (total_frames - 1);
-        auto t0 = Clock::now();
-        FireSolution sol = fcs.lookup(range_m);
-        auto t1 = Clock::now();
+        auto         t0      = Clock::now();
+        FireSolution sol     = fcs.lookup(range_m);
+        auto         t1      = Clock::now();
         total_lookup_us += elapsed_us(t0, t1);
         ++lookup_count;
 
@@ -194,12 +193,13 @@ int main(int argc, char* argv[]) {
             if (sol.valid) {
                 std::printf("[Frame %3d] range=%6.0f m  elev=%6.3f°  ToF=%5.0f ms  "
                             "lookup=%.3f µs\n",
-                            frame, range_m,
-                            sol.elevation_deg, sol.flight_time_ms,
+                            frame,
+                            range_m,
+                            sol.elevation_deg,
+                            sol.flight_time_ms,
                             elapsed_us(t0, t1));
             } else {
-                std::printf("[Frame %3d] range=%6.0f m  (table not ready yet)\n",
-                            frame, range_m);
+                std::printf("[Frame %3d] range=%6.0f m  (table not ready yet)\n", frame, range_m);
             }
         }
 
@@ -208,19 +208,18 @@ int main(int argc, char* argv[]) {
             std::printf("\n[Frame 60] Weapon change — requesting new table build...\n\n");
             // Simulate a slight wind change too
             AtmosphericConditions windy = atm;
-            windy.wind.velocity_ms = Vec3{5.0, 0.0, 0.0};  // 5 m/s crosswind
-            const MunitionSpec& spec2 = lib.get("7.62x51_m80_147gr");
+            windy.wind.velocity_ms      = Vec3{5.0, 0.0, 0.0}; // 5 m/s crosswind
+            const MunitionSpec& spec2   = lib.get("7.62x51_m80_147gr");
             TrajectorySimulator sim2(spec2, windy);
             fcs.request_build(sim2, spec2.muzzle_velocity_ms);
         }
 
         // --- Burn remaining frame time (simulate other game work) ---
-        auto frame_end = Clock::now();
-        const double used_ms = elapsed_ms(frame_start, frame_end);
+        auto         frame_end = Clock::now();
+        const double used_ms   = elapsed_ms(frame_start, frame_end);
         if (used_ms < frame_dt_ms) {
             std::this_thread::sleep_for(
-                std::chrono::microseconds(
-                    static_cast<long>((frame_dt_ms - used_ms) * 1000.0)));
+                std::chrono::microseconds(static_cast<long>((frame_dt_ms - used_ms) * 1000.0)));
         }
     }
 
@@ -230,7 +229,8 @@ int main(int argc, char* argv[]) {
     std::printf("\n--- Summary ---\n");
     std::printf("Total frames     : %d\n", total_frames);
     std::printf("Avg lookup time  : %.3f µs  (budget: %.0f µs/frame)\n",
-                total_lookup_us / lookup_count, budget_us);
+                total_lookup_us / lookup_count,
+                budget_us);
     std::printf("Max range served : %.1f m\n", fcs.max_range_m());
 
     return 0;

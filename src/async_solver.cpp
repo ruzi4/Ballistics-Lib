@@ -1,4 +1,5 @@
 #include "ballistics/async_solver.hpp"
+
 #include "ballistics/math/math_constants.hpp"
 
 #include <algorithm>
@@ -10,29 +11,28 @@ namespace ballistics {
 // solve — synchronous fire-control computation
 // ---------------------------------------------------------------------------
 
-SolveResult solve(const SolveParams& p)
-{
-    SolveResult out;
+SolveResult solve(const SolveParams& p) {
+    SolveResult  out;
 
     const double dx      = p.target_pos.x - p.launcher_pos.x;
     const double dy      = p.target_pos.y - p.launcher_pos.y;
     const double range_m = std::sqrt(dx * dx + dy * dy);
-    out.range_m = range_m;
+    out.range_m          = range_m;
 
     out.alt_diff_m = p.launcher_pos.z - p.target_pos.z;
 
-    if (range_m < 1.0) return out; // launcher and target too close
+    if (range_m < 1.0)
+        return out; // launcher and target too close
 
     TrajectorySimulator sim(p.munition, p.atmosphere);
 
     // Build a quick table to find max range for diagnostics
-    const double az_diag       = std::atan2(dx, dy) * kRadToDeg;
-    const double launch_height = p.launcher_pos.z - p.target_pos.z;
-    const double target_alt    = p.target_pos.z;
+    const double     az_diag       = std::atan2(dx, dy) * kRadToDeg;
+    const double     launch_height = p.launcher_pos.z - p.target_pos.z;
+    const double     target_alt    = p.target_pos.z;
 
     FireControlTable diag_table;
-    diag_table.build(sim, p.muzzle_speed_ms, az_diag, launch_height,
-                     false, 50, target_alt);
+    diag_table.build(sim, p.muzzle_speed_ms, az_diag, launch_height, false, 50, target_alt);
     out.max_range_m = diag_table.max_range_m();
 
     // -------------------------------------------------------------------
@@ -44,20 +44,20 @@ SolveResult solve(const SolveParams& p)
     Vec3   aim_pos  = p.target_pos;
 
     if (p.target_moving) {
-        InterceptSolution isol = solve_moving_target_slewed(
-            sim,
-            p.launcher_pos,
-            p.current_azimuth_deg,
-            p.current_elevation_deg,
-            p.target_pos,
-            p.target_velocity,
-            p.muzzle_speed_ms,
-            p.slew,
-            /*high_angle=*/false,
-            /*tolerance_m=*/0.5,
-            /*max_iterations=*/10);
+        InterceptSolution isol = solve_moving_target_slewed(sim,
+                                                            p.launcher_pos,
+                                                            p.current_azimuth_deg,
+                                                            p.current_elevation_deg,
+                                                            p.target_pos,
+                                                            p.target_velocity,
+                                                            p.muzzle_speed_ms,
+                                                            p.slew,
+                                                            /*high_angle=*/false,
+                                                            /*tolerance_m=*/0.5,
+                                                            /*max_iterations=*/10);
 
-        if (!isol.valid) return out;
+        if (!isol.valid)
+            return out;
 
         used_az  = isol.azimuth_deg;
         used_el  = isol.fire.elevation_deg;
@@ -73,12 +73,16 @@ SolveResult solve(const SolveParams& p)
         LauncherOrientation orient;
         orient.azimuth_deg = az_diag;
 
-        FireSolution sol = solve_elevation(sim, orient, range_m,
+        FireSolution sol = solve_elevation(sim,
+                                           orient,
+                                           range_m,
                                            p.muzzle_speed_ms,
-                                           launch_height, /*high_angle=*/false,
+                                           launch_height,
+                                           /*high_angle=*/false,
                                            /*tolerance_m=*/0.5,
                                            target_alt);
-        if (!sol.valid) return out;
+        if (!sol.valid)
+            return out;
 
         used_az  = az_diag;
         used_el  = sol.elevation_deg;
@@ -91,21 +95,21 @@ SolveResult solve(const SolveParams& p)
     out.flight_time_s = used_tof;
 
     // Collect trajectory arc in ballistics coordinates
-    const double az_r = used_az * kDegToRad;
-    const double el_r = used_el * kDegToRad;
-    const double v    = p.muzzle_speed_ms;
+    const double    az_r = used_az * kDegToRad;
+    const double    el_r = used_el * kDegToRad;
+    const double    v    = p.muzzle_speed_ms;
 
     ProjectileState init;
     init.position = p.launcher_pos;
     init.velocity = {
-        v * std::sin(az_r) * std::cos(el_r),   // East  (+x)
-        v * std::cos(az_r) * std::cos(el_r),   // North (+y)
-        v * std::sin(el_r)                      // Up    (+z)
+        v * std::sin(az_r) * std::cos(el_r), // East  (+x)
+        v * std::cos(az_r) * std::cos(el_r), // North (+y)
+        v * std::sin(el_r)                   // Up    (+z)
     };
     init.time = 0.0;
 
     SimulationConfig cfg;
-    cfg.dt       = 1.0 / 60.0;     // 60 Hz — fine for visualisation
+    cfg.dt       = 1.0 / 60.0; // 60 Hz — fine for visualisation
     cfg.use_rk4  = true;
     cfg.max_time = used_tof * 1.5 + 2.0;
     // When the launcher is below the target the ascending solution reaches the
@@ -127,8 +131,7 @@ SolveResult solve(const SolveParams& p)
 // AsyncSolver
 // ---------------------------------------------------------------------------
 
-void AsyncSolver::request(const SolveParams& params)
-{
+void AsyncSolver::request(const SolveParams& params) {
     if (computing_) {
         // Queue the request for when the current solve completes
         queued_        = true;
@@ -140,8 +143,7 @@ void AsyncSolver::request(const SolveParams& params)
     pending_   = std::async(std::launch::async, ballistics::solve, params);
 }
 
-bool AsyncSolver::poll()
-{
+bool AsyncSolver::poll() {
     if (!computing_) {
         // Start queued request if one is waiting
         if (queued_) {
@@ -152,7 +154,8 @@ bool AsyncSolver::poll()
         return false;
     }
 
-    if (!pending_.valid()) return false;
+    if (!pending_.valid())
+        return false;
     if (pending_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
         return false;
 
