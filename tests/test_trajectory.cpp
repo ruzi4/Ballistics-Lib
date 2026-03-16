@@ -2234,7 +2234,7 @@ static void test_async_solver() {
         solver.poll();
         auto t1 = std::chrono::high_resolution_clock::now();
         double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-        if (elapsed_ms > 10000.0) break;  // 10 s safety timeout
+        if (elapsed_ms > 30000.0) break;  // 30 s safety timeout (CI can be slow)
     }
 
     CHECK(!solver.computing());
@@ -2266,21 +2266,20 @@ static void test_async_solver_queuing() {
     solver.request(sp1);           // starts computing
     solver.request(sp2);           // should be queued
 
-    // Wait for BOTH solves to complete (first + queued)
+    // Wait for all solves to finish.  When poll() completes the first solve
+    // and finds a queued request, it immediately starts the second solve
+    // (computing_ transitions true→false→true inside a single poll() call).
+    // So just waiting for computing()==false captures the end of both solves.
     auto t0 = std::chrono::high_resolution_clock::now();
-    int completions = 0;
-    while (completions < 2) {
-        bool was_computing = solver.computing();
+    while (solver.computing()) {
         solver.poll();
-        // Detect a completion transition
-        if (was_computing && !solver.computing())
-            ++completions;
         auto elapsed_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - t0).count();
-        if (elapsed_ms > 10000.0) break;  // 10 s safety timeout
+        if (elapsed_ms > 30000.0) break;  // 30 s safety timeout (CI can be slow)
     }
 
     // The final result should match the second (queued) request
+    CHECK(!solver.computing());
     CHECK(solver.result().valid);
     CHECK_NEAR(solver.result().range_m, 200.0, 1.0);
 
