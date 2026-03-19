@@ -81,6 +81,21 @@ SolveResult solve(const SolveParams& p) {
                                            /*high_angle=*/false,
                                            /*tolerance_m=*/0.5,
                                            target_alt);
+
+        // When the launcher is below the target, the low-angle ascending-path
+        // solution may not reach the requested range.  Fall back to the
+        // plunging-fire (high-angle) solution in that case.
+        if (!sol.valid && launch_height < 0.0) {
+            sol = solve_elevation(sim,
+                                  orient,
+                                  range_m,
+                                  p.muzzle_speed_ms,
+                                  launch_height,
+                                  /*high_angle=*/true,
+                                  /*tolerance_m=*/0.5,
+                                  target_alt);
+        }
+
         if (!sol.valid)
             return out;
 
