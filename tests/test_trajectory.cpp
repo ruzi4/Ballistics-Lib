@@ -1023,7 +1023,8 @@ static ImpactResult resimulate(const TrajectorySimulator& sim,
                                double                     azimuth_deg,
                                double                     muzzle_speed_ms,
                                double                     launch_height_m,
-                               double                     target_alt_m) {
+                               double                     target_alt_m,
+                               bool                       ascending_detection = false) {
     const double    el    = elevation_deg * kDegToRad;
     const double    az    = azimuth_deg * kDegToRad;
     const Vec3      h_dir = {std::sin(az), std::cos(az), 0.0};
@@ -1038,11 +1039,9 @@ static ImpactResult resimulate(const TrajectorySimulator& sim,
     cfg.max_time = 120.0;
     cfg.use_rk4  = true;
 
-    if (launch_height_m < 0.0) {
-        // Launcher is BELOW the target plane: detect the ascending crossing of
-        // target_alt_m (the projectile rises through the target altitude going up).
-        // simulate() only detects descending crossings via ground_z, so we use a
-        // streaming callback to catch the first upward crossing instead.
+    if (launch_height_m < 0.0 && ascending_detection) {
+        // Launcher is BELOW the target plane, ascending detection:
+        // record the first upward crossing of target_alt_m.
         cfg.ground_z = st.position.z - 1.0; // floor below launcher; never triggered
 
         ProjectileState prev = st, impact = st;
@@ -1065,8 +1064,9 @@ static ImpactResult resimulate(const TrajectorySimulator& sim,
                                     impact.position.y * impact.position.y);
         return {hr, impact.position.z, impact.time};
     } else {
-        // Normal case: launcher at or above the target plane; simulate() terminates
-        // when the projectile descends to ground_z = target_alt_m.
+        // Descending detection: simulate() terminates when the projectile
+        // descends through ground_z = target_alt_m.  Works for both the normal
+        // launcher-above case and launcher-below plunging (high-angle) fire.
         cfg.ground_z         = target_alt_m;
         ProjectileState last = st;
         sim.simulate(st, cfg, [&last](const ProjectileState& s) {
@@ -1283,7 +1283,8 @@ static void test_altitude_launcher_below_target() {
         CHECK(sol.elevation_deg > 0.0);
 
         // Re-simulate via ascending crossing and verify impact
-        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0, s.muzzle, lh, s.target_alt);
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0, s.muzzle, lh, s.target_alt,
+                                      /*ascending_detection=*/true);
         std::printf("    re-sim: h_range=%.2f m  z=%.2f m (target %.2f m)\n",
                     imp.h_range_m,
                     imp.z_m,
@@ -1363,7 +1364,8 @@ static void test_altitude_launcher_below_target() {
         // High-angle plunging shot: elevation is positive (fires upward)
         CHECK(sol.elevation_deg > 0.0);
 
-        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0, s.muzzle, lh, s.target_alt);
+        ImpactResult imp = resimulate(sim, sol.elevation_deg, 0.0, s.muzzle, lh, s.target_alt,
+                                      /*ascending_detection=*/false);
         std::printf("    re-sim: h_range=%.2f m  z=%.2f m (target %.2f m)\n",
                     imp.h_range_m,
                     imp.z_m,
@@ -1480,8 +1482,12 @@ static void test_altitude_both_nonzero() {
         if (!sol.valid)
             continue;
 
+        // When below_target, solver used high_angle=true (descending detection).
+        // When above_target, solver used high_angle=false (ascending_mode=false, descending).
+        // In both cases resimulate should use descending detection.
         ImpactResult imp =
-            resimulate(sim, sol.elevation_deg, 45.0, s.muzzle, launch_height, s.target_alt);
+            resimulate(sim, sol.elevation_deg, 45.0, s.muzzle, launch_height, s.target_alt,
+                       /*ascending_detection=*/false);
         std::printf("    re-sim: h_range=%.2f m  z=%.2f m (target %.2f m)\n",
                     imp.h_range_m,
                     imp.z_m,
@@ -1569,9 +1575,10 @@ static void test_altitude_fire_table() {
                     test_range,
                     sol.elevation_deg);
 
-        // Re-simulate to verify
+        // Re-simulate to verify — high_angle=true uses descending detection
         ImpactResult imp =
-            resimulate(sim, sol.elevation_deg, 0.0, 930.0, launch_height, target_alt);
+            resimulate(sim, sol.elevation_deg, 0.0, 930.0, launch_height, target_alt,
+                       /*ascending_detection=*/false);
         CHECK_NEAR(imp.h_range_m, test_range, test_range * 0.02);
         CHECK_NEAR(imp.z_m, target_alt, 1.0);
     }
@@ -2481,12 +2488,12 @@ static void test_762_static_target() {
         "munitions": [
             {
                 "name": "7.62x51_m80_147gr",
-                "mass_kg": 0.01,
+                "mass_kg": 0.009526,
                 "density_kg_m3": 11000.0,
-                "reference_area_m2": 1e-4,
-                "drag_coefficient": 0.4,
+                "reference_area_m2": 4.560e-5,
+                "drag_coefficient": 0.295,
                 "muzzle_velocity_ms": 853.0,
-                "diameter_m": 0.01
+                "diameter_m": 0.00762
             }
         ]
     })");
