@@ -213,88 +213,87 @@ FireSolution solve_elevation(const TrajectorySimulator& sim,
     constexpr double kLoSearch = -87.0;
     constexpr double kHiSearch = 87.0;
 
-    const double     az = orientation.azimuth_deg;
+    const double az = orientation.azimuth_deg;
 
-    // Detection mode when launcher is below target (launch_height_m < 0):
-    //   high_angle=false → ascending detection: the projectile clips target
-    //     altitude on the way up.  Max range is limited by how far it can
-    //     travel horizontally while barely clearing target_z_m.
-    //   high_angle=true  → descending detection: plunging fire.  The
-    //     projectile arcs well above target_z_m and is detected on the
-    //     way down, giving ranges comparable to level-flight max range.
-    const bool ascending_mode      = (launch_height_m < 0.0 && !high_angle);
-    const bool ascending_detection = ascending_mode; // passed to shoot()
-    const bool effective_hi_ang    = high_angle || ascending_mode;
+    // Bisection helper: given a fixed detection mode and search interval,
+    // returns the best FireSolution found (invalid if error > 50×tolerance).
+    // effective_hi_ang=false → low-angle search [lo_bound, theta_max].
+    // effective_hi_ang=true  → high-angle search [theta_max, hi_bound].
+    auto bisect = [&](bool asc_detect, bool eff_hi_ang) -> FireSolution {
+        auto [theta_max, r_max] = find_max_range_angle(sim,
+                                                       az,
+                                                       muzzle_speed_ms,
+                                                       launch_height_m,
+                                                       kLoSearch,
+                                                       kHiSearch,
+                                                       target_altitude_m,
+                                                       60,
+                                                       asc_detect);
+        if (range_m > r_max)
+            return {};
 
-    auto [theta_max, r_max] = find_max_range_angle(sim,
-                                                   az,
-                                                   muzzle_speed_ms,
-                                                   launch_height_m,
-                                                   kLoSearch,
-                                                   kHiSearch,
-                                                   target_altitude_m,
-                                                   60,
-                                                   ascending_detection);
+        double lo = eff_hi_ang ? theta_max : kLoSearch;
+        double hi = eff_hi_ang ? kHiSearch : theta_max;
 
-    if (range_m > r_max)
-        return {};
+        double best_elev = (lo + hi) * 0.5;
+        double best_time = 0.0;
+        double best_err  = std::numeric_limits<double>::max();
 
-    double lo = effective_hi_ang ? theta_max : kLoSearch;
-    double hi = effective_hi_ang ? kHiSearch : theta_max;
+        for (int i = 0; i < 60; ++i) {
+            const double mid  = (lo + hi) * 0.5;
+            const auto   shot = shoot(sim,
+                                      az,
+                                      mid,
+                                      muzzle_speed_ms,
+                                      launch_height_m,
+                                      target_altitude_m,
+                                      1.0 / 240.0,
+                                      asc_detect);
 
-    // Track the best result seen so far (minimum range error).
-    // This ensures we return the closest solution even if the bisection
-    // exhausts its iteration budget without reaching tolerance_m.
-    double best_elev = (lo + hi) * 0.5;
-    double best_time = 0.0;
-    double best_err  = std::numeric_limits<double>::max();
+            const double err = std::abs(shot.range_m - range_m);
+            if (err < best_err) {
+                best_err  = err;
+                best_elev = mid;
+                best_time = shot.time_s;
+            }
+            if (err <= tolerance_m)
+                break;
 
-    for (int i = 0; i < 60; ++i) {
-        const double mid  = (lo + hi) * 0.5;
-        const auto   shot = shoot(sim,
-                                az,
-                                mid,
-                                muzzle_speed_ms,
-                                launch_height_m,
-                                target_altitude_m,
-                                1.0 / 240.0,
-                                ascending_detection);
-
-        const double err = std::abs(shot.range_m - range_m);
-        if (err < best_err) {
-            best_err  = err;
-            best_elev = mid;
-            best_time = shot.time_s;
+            if (!eff_hi_ang) {
+                if (shot.range_m < range_m) lo = mid; else hi = mid;
+            } else {
+                if (shot.range_m > range_m) lo = mid; else hi = mid;
+            }
         }
 
-        if (err <= tolerance_m)
-            break;
+        if (best_err > tolerance_m * 50.0)
+            return {};
+        return FireSolution{best_elev, best_time * 1000.0, true};
+    };
 
-        // Bisection direction:
-        //   normal low-angle  : range increases with elevation → standard
-        //   high-angle or
-        //   ascending mode    : range decreases with elevation → inverted
-        if (!effective_hi_ang) {
-            if (shot.range_m < range_m)
-                lo = mid;
-            else
-                hi = mid;
-        } else {
-            if (shot.range_m > range_m)
-                lo = mid;
-            else
-                hi = mid;
-        }
-    }
+    // high_angle=true: plunging fire — descending detection, above-theta_max
+    // search.  Used for intentional high-angle indirect fire.
+    if (high_angle)
+        return bisect(/*asc_detect=*/false, /*eff_hi_ang=*/true);
 
-    // Guard: if the bisection never brought the range error within 50× the
-    // requested tolerance, the target range is not achievable at the given
-    // target altitude.  Returning valid=false in this case is correct;
-    // callers should use a FireControlTable to find the achievable envelope.
-    if (best_err > tolerance_m * 50.0)
-        return {};
+    // high_angle=false: prefer the natural low-angle direct-fire trajectory
+    // (descending detection, below-theta_max search).  This handles both the
+    // launcher-above-target case and the launcher-slightly-below-target case
+    // where the bullet arcs above target altitude and descends to it.
+    //
+    // If descending detection cannot reach the requested range (e.g. the
+    // target is far above the launcher and the minimum descending-crossing
+    // range is larger than range_m), fall back to ascending detection.  That
+    // mode finds the short-range solution where the bullet clips target
+    // altitude on the way up.
+    if (FireSolution sol = bisect(/*asc_detect=*/false, /*eff_hi_ang=*/false); sol.valid)
+        return sol;
 
-    return FireSolution{best_elev, best_time * 1000.0, true};
+    // Ascending-detection fallback (launcher below target, short range).
+    if (launch_height_m < 0.0)
+        return bisect(/*asc_detect=*/true, /*eff_hi_ang=*/true);
+
+    return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -519,12 +518,12 @@ void FireControlTable::build(const TrajectorySimulator& sim,
     constexpr double kBuildDt = 1.0 / 120.0;
 
     // Detection mode mirrors solve_elevation:
-    //   launcher below target + high_angle=false → ascending detection
-    //   launcher below target + high_angle=true  → descending (plunging fire)
-    //   launcher at/above target                 → descending (standard)
-    const bool ascending_mode      = (launch_height_m < 0.0 && !high_angle);
-    const bool ascending_detection = ascending_mode;
-    const bool effective_hi_ang    = high_angle || ascending_mode;
+    //   high_angle=true  → descending detection, sweep above theta_max (plunging fire)
+    //   high_angle=false → descending detection, sweep below theta_max (direct fire)
+    // Ascending detection is not used in the table; solve_elevation handles the
+    // short-range ascending-path fallback internally.
+    const bool ascending_detection = false;
+    const bool effective_hi_ang    = high_angle;
 
     // --- Step 1: quick ternary search for theta_max (20 iterations = 40 sims) ---
     auto [theta_max_sb, r_max_unused] = find_max_range_angle(sim,

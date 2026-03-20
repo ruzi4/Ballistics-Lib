@@ -73,6 +73,11 @@ SolveResult solve(const SolveParams& p) {
         LauncherOrientation orient;
         orient.azimuth_deg = az_diag;
 
+        // solve_elevation with high_angle=false tries the natural low-angle
+        // direct-fire path (descending detection) first.  If that cannot reach
+        // the requested range it automatically falls back to the ascending-
+        // detection path (short-range clip of target altitude on the way up).
+        // No explicit fallback is needed here.
         FireSolution sol = solve_elevation(sim,
                                            orient,
                                            range_m,
@@ -81,21 +86,6 @@ SolveResult solve(const SolveParams& p) {
                                            /*high_angle=*/false,
                                            /*tolerance_m=*/0.5,
                                            target_alt);
-
-        // When the launcher is below the target, the low-angle ascending-path
-        // solution may not reach the requested range.  Fall back to the
-        // plunging-fire (high-angle) solution in that case.
-        if (!sol.valid && launch_height < 0.0) {
-            sol = solve_elevation(sim,
-                                  orient,
-                                  range_m,
-                                  p.muzzle_speed_ms,
-                                  launch_height,
-                                  /*high_angle=*/true,
-                                  /*tolerance_m=*/0.5,
-                                  target_alt);
-        }
-
         if (!sol.valid)
             return out;
 
