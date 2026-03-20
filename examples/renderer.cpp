@@ -405,6 +405,15 @@ int main() {
             sp.current_azimuth_deg   = (double)phys_az;
             sp.current_elevation_deg = (double)phys_el;
             sp.slew                  = slew_cfg;
+
+            // Barrel geometry — must match draw_launcher() at scale=1.
+            // The barrel base is 0.6 m above the launcher body centre (z-up).
+            // The barrel extends 3.5 m from the base to the muzzle.
+            // These values are the physical dimensions; draw_launcher() scales
+            // them visually for camera-distance readability.
+            sp.barrel_base_offset_m = {0.0, 0.0, 0.6};
+            sp.barrel_length_m      = 3.5;
+
             sp.munition              = lib.get(mun_names[(size_t)mun_idx]);
             sp.atmosphere            = atmo;
             sp.muzzle_speed_ms       = (double)muzzle_speed;

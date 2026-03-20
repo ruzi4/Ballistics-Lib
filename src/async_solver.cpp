@@ -73,6 +73,11 @@ SolveResult solve(const SolveParams& p) {
         LauncherOrientation orient;
         orient.azimuth_deg = az_diag;
 
+        // solve_elevation with high_angle=false tries the natural low-angle
+        // direct-fire path (descending detection) first.  If that cannot reach
+        // the requested range it automatically falls back to the ascending-
+        // detection path (short-range clip of target altitude on the way up).
+        // No explicit fallback is needed here.
         FireSolution sol = solve_elevation(sim,
                                            orient,
                                            range_m,
@@ -95,18 +100,29 @@ SolveResult solve(const SolveParams& p) {
     out.flight_time_s = used_tof;
 
     // Collect trajectory arc in ballistics coordinates
-    const double    az_r = used_az * kDegToRad;
-    const double    el_r = used_el * kDegToRad;
-    const double    v    = p.muzzle_speed_ms;
+    const double az_r = used_az * kDegToRad;
+    const double el_r = used_el * kDegToRad;
+    const double v    = p.muzzle_speed_ms;
+
+    // Unit vector in the fire-solution direction (ballistics: x=East, y=North, z=Up)
+    const Vec3 firing_dir = {
+        std::sin(az_r) * std::cos(el_r), // East  (+x)
+        std::cos(az_r) * std::cos(el_r), // North (+y)
+        std::sin(el_r)                   // Up    (+z)
+    };
+
+    // Muzzle (barrel tip) position: launcher body centre
+    //   + fixed offset to barrel pivot/base
+    //   + barrel_length_m along the fire-solution direction
+    const Vec3 muzzle_pos = p.launcher_pos
+                          + p.barrel_base_offset_m
+                          + firing_dir * p.barrel_length_m;
+    out.muzzle_pos = muzzle_pos;
 
     ProjectileState init;
-    init.position = p.launcher_pos;
-    init.velocity = {
-        v * std::sin(az_r) * std::cos(el_r), // East  (+x)
-        v * std::cos(az_r) * std::cos(el_r), // North (+y)
-        v * std::sin(el_r)                   // Up    (+z)
-    };
-    init.time = 0.0;
+    init.position = muzzle_pos;
+    init.velocity = firing_dir * v;
+    init.time     = 0.0;
 
     SimulationConfig cfg;
     cfg.dt       = 1.0 / 60.0; // 60 Hz — fine for visualisation

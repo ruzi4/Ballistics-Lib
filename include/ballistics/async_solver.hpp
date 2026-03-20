@@ -18,13 +18,23 @@ namespace ballistics {
 /// solve_moving_target_slewed() to account for target velocity and launcher
 /// rotation time.
 struct SolveParams {
-    Vec3         launcher_pos;    ///< World-space launcher position (m)
+    Vec3         launcher_pos;    ///< World-space launcher body centre position (m)
     Vec3         target_pos;      ///< Current target position (m)
     Vec3         target_velocity; ///< Target velocity (m/s); ignored when target_moving is false
     bool         target_moving{false};          ///< True = use moving-target intercept solver
     double       current_azimuth_deg{0.0};      ///< Current physical launcher azimuth (deg)
     double       current_elevation_deg{0.0};    ///< Current physical launcher elevation (deg)
     LauncherSlew slew;                          ///< Launcher yaw/pitch slew rates
+
+    /// Barrel geometry — used to compute the muzzle (barrel tip) position.
+    ///
+    /// The barrel base is located at launcher_pos + barrel_base_offset_m.
+    /// The muzzle is then barrel_length_m along the fire-solution direction
+    /// from the barrel base.  Both default to zero, which keeps the trajectory
+    /// starting at launcher_pos (backward-compatible behaviour).
+    Vec3   barrel_base_offset_m; ///< Offset from launcher body centre to barrel pivot (m)
+    double barrel_length_m{0.0}; ///< Physical barrel length from pivot to muzzle (m)
+
     MunitionSpec munition;                      ///< Projectile specification
     AtmosphericConditions atmosphere;           ///< Atmospheric conditions at the engagement
     double                muzzle_speed_ms{0.0}; ///< Muzzle velocity (m/s)
@@ -44,8 +54,13 @@ struct SolveResult {
     double alt_diff_m{0.0};    ///< Launcher altitude minus target altitude (m)
 
     /// Trajectory arc in world-space ballistics coordinates (x=East, y=North, z=Up).
-    /// Sampled at 60 Hz from launch to impact; suitable for visualisation.
+    /// Sampled at 60 Hz from muzzle to impact; suitable for visualisation.
     std::vector<Vec3> trajectory;
+
+    /// Muzzle (barrel tip) world-space position computed from launcher_pos,
+    /// barrel_base_offset_m, barrel_length_m, and the fire-solution angles.
+    /// The trajectory always starts from this point.
+    Vec3 muzzle_pos;
 
     // Moving-target intercept extras
     bool   has_intercept{false}; ///< True when the moving-target solver was used
