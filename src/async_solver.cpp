@@ -78,14 +78,54 @@ SolveResult solve(const SolveParams& p) {
         // the requested range it automatically falls back to the ascending-
         // detection path (short-range clip of target altitude on the way up).
         // No explicit fallback is needed here.
-        FireSolution sol = solve_elevation(sim,
-                                           orient,
-                                           range_m,
-                                           p.muzzle_speed_ms,
-                                           launch_height,
-                                           /*high_angle=*/false,
-                                           /*tolerance_m=*/0.5,
-                                           target_alt);
+        //
+        // Barrel-geometry correction: the trajectory starts at the muzzle, not
+        // the launcher body centre.  The muzzle's Z and horizontal position
+        // depend on the fire elevation, so we iterate:
+        //   1. Solve elevation using current effective range / height.
+        //   2. Compute the muzzle position from the solved elevation.
+        //   3. Re-derive effective range and height from the muzzle to the target.
+        //   4. Repeat until both values converge (typically 2–3 iterations).
+        double       eff_range  = range_m;
+        double       eff_height = launch_height;
+        FireSolution sol;
+
+        for (int barrel_iter = 0; barrel_iter < 5; ++barrel_iter) {
+            sol = solve_elevation(sim,
+                                  orient,
+                                  eff_range,
+                                  p.muzzle_speed_ms,
+                                  eff_height,
+                                  /*high_angle=*/false,
+                                  /*tolerance_m=*/0.5,
+                                  target_alt);
+            if (!sol.valid)
+                return out;
+
+            // Compute muzzle position at this elevation.
+            const double el_r_i  = sol.elevation_deg * kDegToRad;
+            const double az_r_i  = az_diag * kDegToRad;
+            const Vec3   fdir_i  = {std::sin(az_r_i) * std::cos(el_r_i),
+                                    std::cos(az_r_i) * std::cos(el_r_i),
+                                    std::sin(el_r_i)};
+            const Vec3   muz_i   = p.launcher_pos
+                                 + p.barrel_base_offset_m
+                                 + fdir_i * p.barrel_length_m;
+
+            // Effective range and height from muzzle to target.
+            const double mdx       = p.target_pos.x - muz_i.x;
+            const double mdy       = p.target_pos.y - muz_i.y;
+            const double new_range = std::sqrt(mdx * mdx + mdy * mdy);
+            const double new_ht    = muz_i.z - p.target_pos.z;
+
+            if (std::abs(new_range - eff_range) < 0.01 &&
+                std::abs(new_ht   - eff_height) < 0.001)
+                break;
+
+            eff_range  = new_range;
+            eff_height = new_ht;
+        }
+
         if (!sol.valid)
             return out;
 

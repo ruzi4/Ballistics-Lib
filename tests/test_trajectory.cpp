@@ -2480,6 +2480,73 @@ static void test_async_solver_queuing() {
                 solver.result().range_m);
 }
 
+// ---------------------------------------------------------------------------
+// Barrel-geometry correction: trajectory must reach the target even when the
+// muzzle is offset from the launcher body centre.
+// ---------------------------------------------------------------------------
+static void test_solve_barrel_offset_hits_target() {
+    SECTION("solve: barrel offset — trajectory endpoint reaches target");
+
+    // Use a vacuum munition so physics is predictable and deterministic.
+    MunitionSpec m;
+    m.mass_kg          = 0.01;
+    m.diameter_m       = 0.01;
+    m.drag_coefficient = 0.0; // vacuum: no drag
+
+    AtmosphericConditions atm = still_atm();
+
+    // Target 500 m north at the same altitude as the launcher.
+    const Vec3 launcher = {0.0, 0.0, 0.0};
+    const Vec3 target   = {0.0, 500.0, 0.0};
+
+    // Give the weapon a realistic barrel: 0.5 m vertical base offset + 1.5 m barrel.
+    // Without the barrel-geometry correction the muzzle starts 0.5 m above the
+    // launcher origin, causing the trajectory to land above the target.
+    SolveParams sp;
+    sp.launcher_pos          = launcher;
+    sp.target_pos            = target;
+    sp.target_moving         = false;
+    sp.munition              = m;
+    sp.atmosphere            = atm;
+    sp.muzzle_speed_ms       = 600.0;
+    sp.barrel_base_offset_m  = {0.0, 0.0, 0.5}; // 0.5 m above launcher centre
+    sp.barrel_length_m       = 1.5;
+
+    SolveResult res = solve(sp);
+
+    CHECK(res.valid);
+    CHECK(res.trajectory.size() > 2);
+
+    // The trajectory passes through target altitude (z=0) somewhere; find
+    // the crossing by linear interpolation and check that horizontal position
+    // matches the target.  Before the fix the crossing happened ~0.5 m north
+    // of the target because the solver ignored the 0.5 m barrel base offset.
+    Vec3   cross    = res.trajectory.back();
+    bool   found    = false;
+    for (std::size_t i = 1; i < res.trajectory.size(); ++i) {
+        const Vec3& prev = res.trajectory[i - 1];
+        const Vec3& cur  = res.trajectory[i];
+        if (prev.z >= target.z && cur.z < target.z) {
+            const double dz   = prev.z - cur.z;
+            const double frac = (dz > 0.0) ? (prev.z - target.z) / dz : 0.0;
+            cross.x = prev.x + frac * (cur.x - prev.x);
+            cross.y = prev.y + frac * (cur.y - prev.y);
+            cross.z = target.z;
+            found   = true;
+            break;
+        }
+    }
+    CHECK(found); // trajectory must cross target altitude
+    CHECK_NEAR(cross.x, target.x, 1.0);
+    CHECK_NEAR(cross.y, target.y, 1.0);
+
+    // Muzzle position should reflect the barrel geometry.
+    CHECK_NEAR(res.muzzle_pos.z, 0.5 + std::sin(res.elevation_deg * kDegToRad) * 1.5, 0.01);
+
+    std::printf("  Barrel-offset solve: elev=%.4f°  muzzle_z=%.3f m  cross_y=%.4f m (target %.1f)\n",
+                res.elevation_deg, res.muzzle_pos.z, cross.y, target.y);
+}
+
 static void test_762_static_target() {
     SECTION("Static target scenario — 7.62 munition, muzzle velocity 853 m/s, "
             "launcher at (0,0,304), target at (1714,437,323) — solution valid");
@@ -2691,6 +2758,8 @@ int main() {
     test_solve_too_close();
     test_async_solver();
     test_async_solver_queuing();
+
+    test_solve_barrel_offset_hits_target();
 
     test_762_static_target();
     test_762_target_altitude_sweep_1300m();
