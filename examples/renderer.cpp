@@ -159,9 +159,10 @@ int main() {
     // -----------------------------------------------------------------------
     // Window
     // -----------------------------------------------------------------------
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(1420, 920, "Ballistics Trajectory Renderer");
     SetTargetFPS(60);
+    SetTextureFilter(GetFontDefault().texture, TEXTURE_FILTER_BILINEAR);
 
     // -----------------------------------------------------------------------
     // Load munitions
@@ -271,6 +272,13 @@ int main() {
     const int             PANEL_W = 340;
 
     // -----------------------------------------------------------------------
+    // Inline slider editor state
+    // -1 = no slider being edited; 0-9 = index of the active slider.
+    // -----------------------------------------------------------------------
+    int  sie_active = -1;
+    char sie_buf[32] = {};
+
+    // -----------------------------------------------------------------------
     // Main loop
     // -----------------------------------------------------------------------
     while (!WindowShouldClose()) {
@@ -334,6 +342,10 @@ int main() {
             if (IsKeyDown(KEY_PAGE_DOWN))
                 lz -= spd * 0.3f;
         }
+
+        // F11 fullscreen toggle
+        if (IsKeyPressed(KEY_F11))
+            ToggleBorderlessWindowed();
 
         // Clamp altitudes to >= 0
         tz = std::max(tz, 0.f);
@@ -540,7 +552,13 @@ int main() {
             // Always draw at least 500 cells so the grid extends far enough.
             int slices = (int)std::ceil(cam_dist * 2.f / cell);
             slices     = std::max(slices, 200);
+            // Snap grid to cell boundaries to avoid swimming as camera moves.
+            float grid_cx = std::round(focus.x / cell) * cell;
+            float grid_cz = std::round(focus.z / cell) * cell;
+            rlPushMatrix();
+            rlTranslatef(grid_cx, 0.f, grid_cz);
             DrawGrid(slices, cell);
+            rlPopMatrix();
         }
 
         // Axis arrows — length scales with camera distance so they stay visible.
@@ -750,6 +768,45 @@ int main() {
         const Color ctrl_col = LIGHTGRAY;
         int         y        = 12;
 
+        // Cancel any pending inline edit when a dropdown opens
+        const bool any_dd_open = dd_edit || vf_dd_edit;
+        if (any_dd_open && sie_active >= 0)
+            sie_active = -1;
+
+        // Helper: draw a slider's value as clickable text that becomes a text
+        // box when clicked, allowing direct numerical entry.
+        // vx,vy = top-left of the 62×rh value rect.
+        // can_edit: false when the slider is semantically locked (e.g. target_moving).
+        auto slider_val = [&](int idx, float* val, float lo, float hi,
+                               const char* fmt, int fsz, Color fcolor,
+                               int vx, int vy, bool can_edit) {
+            Rectangle vr = {(float)vx, (float)vy, 62.f, (float)rh};
+            if (sie_active == idx) {
+                // Commit on Enter or click outside the value rect
+                bool commit = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
+                              (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                               !CheckCollisionPointRec(GetMousePosition(), vr));
+                if (commit) {
+                    *val       = Clamp((float)atof(sie_buf), lo, hi);
+                    sie_active = -1;
+                } else {
+                    GuiTextBox(vr, sie_buf, 32, true);
+                }
+            } else {
+                char tmp[32];
+                snprintf(tmp, sizeof(tmp), fmt, (double)*val);
+                // Subtle background to hint the field is clickable
+                DrawRectangle(vx, vy + 2, 62, rh - 4, {80, 85, 100, 55});
+                DrawText(tmp, vx + 4, vy + (rh - fsz) / 2, fsz, fcolor);
+                if (can_edit && !any_dd_open &&
+                    IsMouseButtonPressed(MOUSE_BUTTON_LEFT) &&
+                    CheckCollisionPointRec(GetMousePosition(), vr)) {
+                    snprintf(sie_buf, sizeof(sie_buf), fmt, (double)*val);
+                    sie_active = idx;
+                }
+            }
+        };
+
         DrawText("Ballistics Renderer", mx, y, 18, WHITE);
         y += 34;
 
@@ -759,16 +816,17 @@ int main() {
         const int mun_dd_y = y; // save Y for deferred dropdown draw
         y += rh + 6;
 
+        // Lock all interactive controls while a dropdown is open so clicks on
+        // dropdown items don't also activate the sliders underneath.
+        if (any_dd_open) GuiLock();
+
         // Muzzle speed slider
         DrawText("Muzzle speed (m/s)", mx, y, 12, sec_col);
         y += 16;
         GuiSliderBar({(float)mx, (float)y, (float)(cw - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &muzzle_speed,
-                     100.f,
-                     1500.f);
-        DrawText(TextFormat("%.0f", muzzle_speed), mx + cw - 62, y + 6, 14, val_col);
+                     nullptr, nullptr, &muzzle_speed, 100.f, 1500.f);
+        slider_val(0, &muzzle_speed, 100.f, 1500.f, "%.0f", 14, val_col,
+                   mx + cw - 62, y, true);
         y += rh + 14;
 
         // ---- Launcher -------------------------------------------------------
@@ -777,73 +835,55 @@ int main() {
 
         DrawText("X(E)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({(float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &lx,
-                     -5000.f,
-                     5000.f);
-        DrawText(TextFormat("%+.0f", lx), mx + cw - 62, y + 6, 13, val_col);
+                     nullptr, nullptr, &lx, -5000.f, 5000.f);
+        slider_val(1, &lx, -5000.f, 5000.f, "%+.0f", 13, val_col,
+                   mx + cw - 62, y, true);
         y += rh + 3;
 
         DrawText("Y(N)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({(float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &ly,
-                     -5000.f,
-                     5000.f);
-        DrawText(TextFormat("%+.0f", ly), mx + cw - 62, y + 6, 13, val_col);
+                     nullptr, nullptr, &ly, -5000.f, 5000.f);
+        slider_val(2, &ly, -5000.f, 5000.f, "%+.0f", 13, val_col,
+                   mx + cw - 62, y, true);
         y += rh + 3;
 
         DrawText("Alt", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({(float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &lz,
-                     0.f,
-                     2000.f);
-        DrawText(TextFormat("%.1f", lz), mx + cw - 62, y + 6, 13, val_col);
+                     nullptr, nullptr, &lz, 0.f, 2000.f);
+        slider_val(3, &lz, 0.f, 2000.f, "%.1f", 13, val_col,
+                   mx + cw - 62, y, true);
         y += rh + 14;
 
         // ---- Target ---------------------------------------------------------
         DrawText("TARGET  (x=East, y=North, z=Alt  metres)", mx, y, 12, sec_col);
         y += 17;
 
-        if (target_moving)
-            GuiLock();
+        // Lock target sliders when moving target is active (but only add the
+        // lock if the dropdown hasn't already locked the GUI).
+        if (!any_dd_open && target_moving) GuiLock();
 
         DrawText("X(E)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({(float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &tx,
-                     -5000.f,
-                     5000.f);
-        DrawText(TextFormat("%+.0f", tx), mx + cw - 62, y + 6, 13, val_col);
+                     nullptr, nullptr, &tx, -5000.f, 5000.f);
+        slider_val(4, &tx, -5000.f, 5000.f, "%+.0f", 13, val_col,
+                   mx + cw - 62, y, !target_moving);
         y += rh + 3;
 
         DrawText("Y(N)", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({(float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &ty,
-                     -5000.f,
-                     5000.f);
-        DrawText(TextFormat("%+.0f", ty), mx + cw - 62, y + 6, 13, val_col);
+                     nullptr, nullptr, &ty, -5000.f, 5000.f);
+        slider_val(5, &ty, -5000.f, 5000.f, "%+.0f", 13, val_col,
+                   mx + cw - 62, y, !target_moving);
         y += rh + 3;
 
         DrawText("Alt", mx, y + 6, 13, ctrl_col);
         GuiSliderBar({(float)(mx + 38), (float)y, (float)(cw - 38 - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &tz,
-                     0.f,
-                     2000.f);
-        DrawText(TextFormat("%.1f", tz), mx + cw - 62, y + 6, 13, val_col);
+                     nullptr, nullptr, &tz, 0.f, 2000.f);
+        slider_val(6, &tz, 0.f, 2000.f, "%.1f", 13, val_col,
+                   mx + cw - 62, y, !target_moving);
         y += rh + 10;
 
-        if (target_moving)
-            GuiUnlock();
+        if (!any_dd_open && target_moving) GuiUnlock();
 
         // ---- Moving Target --------------------------------------------------
         DrawText("MOVING TARGET", mx, y, 12, sec_col);
@@ -854,33 +894,30 @@ int main() {
 
         DrawText("Speed (m/s)", mx, y + 6, 12, ctrl_col);
         GuiSliderBar({(float)mx, (float)(y + 18), (float)(cw - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &target_speed,
-                     0.5f,
-                     200.f);
-        DrawText(TextFormat("%.1f", target_speed), mx + cw - 62, y + 24, 14, val_col);
+                     nullptr, nullptr, &target_speed, 0.5f, 200.f);
+        slider_val(7, &target_speed, 0.5f, 200.f, "%.1f", 14, val_col,
+                   mx + cw - 62, y + 18, true);
         y += rh + 22;
 
         DrawText("Heading (deg)", mx, y + 6, 12, ctrl_col);
         GuiSliderBar({(float)mx, (float)(y + 18), (float)(cw - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &target_yaw,
-                     0.f,
-                     360.f);
-        DrawText(TextFormat("%.0f", target_yaw), mx + cw - 62, y + 24, 14, val_col);
+                     nullptr, nullptr, &target_yaw, 0.f, 360.f);
+        slider_val(8, &target_yaw, 0.f, 360.f, "%.0f", 14, val_col,
+                   mx + cw - 62, y + 18, true);
         y += rh + 22;
 
         DrawText("Distance (m)", mx, y + 6, 12, ctrl_col);
         GuiSliderBar({(float)mx, (float)(y + 18), (float)(cw - 68), (float)rh},
-                     nullptr,
-                     nullptr,
-                     &target_travel_dist,
-                     10.f,
-                     5000.f);
-        DrawText(TextFormat("%.0f", target_travel_dist), mx + cw - 62, y + 24, 14, val_col);
+                     nullptr, nullptr, &target_travel_dist, 10.f, 5000.f);
+        slider_val(9, &target_travel_dist, 10.f, 5000.f, "%.0f", 14, val_col,
+                   mx + cw - 62, y + 18, true);
         y += rh + 26;
+
+        // ---- View Focus (rendered before Fire Solution per UX preference) ----
+        DrawText("VIEW FOCUS", mx, y, 12, sec_col);
+        y += 16;
+        const int vf_dd_y = y; // save Y for deferred dropdown draw
+        y += rh + 10;
 
         // ---- Fire Solution --------------------------------------------------
         DrawText("FIRE SOLUTION", mx, y, 12, sec_col);
@@ -953,13 +990,8 @@ int main() {
             y += 16;
         }
 
-        // ---- View Focus -----------------------------------------------------
-        y += 4;
-        DrawText("VIEW FOCUS", mx, y, 12, sec_col);
-        y += 16;
-        const int vf_dd_y = y; // save Y for deferred dropdown draw
-        y += rh + 6;
-
+        // Unlock before deferred draws so dropdowns can receive mouse input.
+        if (any_dd_open) GuiUnlock();
 
         // ---- Deferred dropdown draws (on top of all other controls) ---------
         if (GuiDropdownBox({(float)mx, (float)vf_dd_y, (float)cw, (float)rh},
