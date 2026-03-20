@@ -1,5 +1,7 @@
 #include "ballistics/fire_control.hpp"
+
 #include "ballistics/math/math_constants.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -32,32 +34,33 @@ namespace {
 //     above the launcher (the descending crossing occurs at ranges far
 //     exceeding any practical engagement distance).
 // ---------------------------------------------------------------------------
-struct ShotResult { double range_m; double time_s; };
+struct ShotResult {
+    double range_m;
+    double time_s;
+};
 
-ShotResult shoot(
-    const TrajectorySimulator& sim,
-    double azimuth_deg,
-    double elevation_deg,
-    double muzzle_speed_ms,
-    double launch_height_m,
-    double target_z_m  = 0.0,
-    double sim_dt      = 1.0 / 240.0)
-{
-    const double az       = azimuth_deg   * kDegToRad;
-    const double el       = elevation_deg * kDegToRad;
-    const double launch_z = target_z_m + launch_height_m;
+ShotResult shoot(const TrajectorySimulator& sim,
+                 double                     azimuth_deg,
+                 double                     elevation_deg,
+                 double                     muzzle_speed_ms,
+                 double                     launch_height_m,
+                 double                     target_z_m          = 0.0,
+                 double                     sim_dt              = 1.0 / 240.0,
+                 bool                       ascending_detection = false) {
+    const double    az       = azimuth_deg * kDegToRad;
+    const double    el       = elevation_deg * kDegToRad;
+    const double    launch_z = target_z_m + launch_height_m;
 
-    const Vec3 h_dir{std::sin(az), std::cos(az), 0.0};
+    const Vec3      h_dir{std::sin(az), std::cos(az), 0.0};
 
     ProjectileState st;
     st.position = Vec3{0.0, 0.0, launch_z};
-    st.velocity = muzzle_speed_ms * (std::cos(el) * h_dir
-                                   + Vec3{0.0, 0.0, std::sin(el)});
+    st.velocity = muzzle_speed_ms * (std::cos(el) * h_dir + Vec3{0.0, 0.0, std::sin(el)});
     st.time     = 0.0;
 
     SimulationConfig cfg;
     cfg.dt       = sim_dt;
-    cfg.max_time = 60.0;   // 1-minute ceiling; enough for any munition at max elevation
+    cfg.max_time = 60.0; // 1-minute ceiling; enough for any munition at max elevation
     cfg.use_rk4  = true;
 
     // -----------------------------------------------------------------------
@@ -78,74 +81,107 @@ ShotResult shoot(
         if (std::abs(last.position.z - target_z_m) > 1.0)
             return {0.0, 0.0};
 
-        const double h_range = std::sqrt(last.position.x * last.position.x
-                                       + last.position.y * last.position.y);
+        const double h_range =
+            std::sqrt(last.position.x * last.position.x + last.position.y * last.position.y);
         return {h_range, last.time};
     }
 
     // -----------------------------------------------------------------------
-    // Launcher below target: detect ascending crossing of target_z_m
+    // Launcher below target: two detection modes
     // -----------------------------------------------------------------------
-    // Set the simulation floor below the launcher so simulate() does not
-    // terminate early via the ground_z check.
-    cfg.ground_z = launch_z - 1.0;
+    if (ascending_detection) {
+        // Ascending detection: record the first upward crossing of target_z_m.
+        // Used for low-angle (direct) shots where the projectile clips target
+        // altitude on the way up.  Set the floor below the launcher so
+        // simulate() does not terminate early via the ground_z check.
+        cfg.ground_z = launch_z - 1.0;
 
-    ProjectileState prev   = st;
-    ProjectileState impact = st;
-    bool            found  = false;
+        ProjectileState prev   = st;
+        ProjectileState impact = st;
+        bool            found  = false;
 
-    sim.simulate(st, cfg, [&](const ProjectileState& s) {
-        // Ascending crossing: prev was below target altitude, s is at/above it.
-        if (prev.position.z < target_z_m && s.position.z >= target_z_m) {
-            const double dz   = s.position.z - prev.position.z;
-            const double frac = (dz > 0.0) ? (target_z_m - prev.position.z) / dz : 0.0;
-            impact.position.x = prev.position.x + frac * (s.position.x - prev.position.x);
-            impact.position.y = prev.position.y + frac * (s.position.y - prev.position.y);
-            impact.position.z = target_z_m;
-            impact.time       = prev.time + frac * (s.time - prev.time);
-            found = true;
-            return false; // stop simulation early
-        }
-        // Abort as soon as the projectile starts falling back below target
-        // altitude — it will never cross target_z_m going up again.
-        if (s.position.z < target_z_m && s.velocity.z < 0.0)
-            return false;
-        prev = s;
+        sim.simulate(st, cfg, [&](const ProjectileState& s) {
+            // Ascending crossing: prev was below target altitude, s is at/above it.
+            if (prev.position.z < target_z_m && s.position.z >= target_z_m) {
+                const double dz   = s.position.z - prev.position.z;
+                const double frac = (dz > 0.0) ? (target_z_m - prev.position.z) / dz : 0.0;
+                impact.position.x = prev.position.x + frac * (s.position.x - prev.position.x);
+                impact.position.y = prev.position.y + frac * (s.position.y - prev.position.y);
+                impact.position.z = target_z_m;
+                impact.time       = prev.time + frac * (s.time - prev.time);
+                found             = true;
+                return false; // stop simulation early
+            }
+            // Abort as soon as the projectile starts falling back below target
+            // altitude — it will never cross target_z_m going up again.
+            if (s.position.z < target_z_m && s.velocity.z < 0.0)
+                return false;
+            prev = s;
+            return true;
+        });
+
+        if (!found)
+            return {0.0, 0.0};
+
+        const double h_range =
+            std::sqrt(impact.position.x * impact.position.x + impact.position.y * impact.position.y);
+        return {h_range, impact.time};
+    }
+
+    // Descending detection: the projectile arcs above target_z_m and is
+    // detected when it crosses back down through target_z_m (plunging fire).
+    // Setting ground_z = target_z_m lets simulate()'s built-in ground
+    // intersection code detect the descending crossing automatically.
+    // The projectile starts below target_z_m so the ascending pass is ignored
+    // by the intersection check (which only fires when state.z > ground_z).
+    cfg.ground_z = target_z_m;
+
+    ProjectileState last = st;
+    sim.simulate(st, cfg, [&last](const ProjectileState& s) {
+        last = s;
         return true;
     });
 
-    if (!found) return {0.0, 0.0};
+    if (std::abs(last.position.z - target_z_m) > 1.0)
+        return {0.0, 0.0};
 
-    const double h_range = std::sqrt(impact.position.x * impact.position.x
-                                   + impact.position.y * impact.position.y);
-    return {h_range, impact.time};
+    const double h_range =
+        std::sqrt(last.position.x * last.position.x + last.position.y * last.position.y);
+    return {h_range, last.time};
 }
 
 // ---------------------------------------------------------------------------
 // Internal: ternary search for the elevation angle of maximum range.
 // Returns {theta_max_deg, max_range_m}.
 // ---------------------------------------------------------------------------
-std::pair<double, double> find_max_range_angle(
-    const TrajectorySimulator& sim,
-    double azimuth_deg,
-    double muzzle_speed_ms,
-    double launch_height_m,
-    double lo_deg,
-    double hi_deg,
-    double target_z_m  = 0.0,
-    int    iterations  = 60)
-{
+std::pair<double, double> find_max_range_angle(const TrajectorySimulator& sim,
+                                               double                     azimuth_deg,
+                                               double                     muzzle_speed_ms,
+                                               double                     launch_height_m,
+                                               double                     lo_deg,
+                                               double                     hi_deg,
+                                               double                     target_z_m         = 0.0,
+                                               int                        iterations         = 60,
+                                               bool                       ascending_detection = false) {
     for (int i = 0; i < iterations; ++i) {
         const double span = hi_deg - lo_deg;
         const double m1   = lo_deg + span / 3.0;
         const double m2   = hi_deg - span / 3.0;
-        const double r1   = shoot(sim, azimuth_deg, m1, muzzle_speed_ms, launch_height_m, target_z_m).range_m;
-        const double r2   = shoot(sim, azimuth_deg, m2, muzzle_speed_ms, launch_height_m, target_z_m).range_m;
-        if (r1 < r2) lo_deg = m1;
-        else          hi_deg = m2;
+        const double r1   = shoot(sim, azimuth_deg, m1, muzzle_speed_ms, launch_height_m,
+                                target_z_m, 1.0 / 240.0, ascending_detection)
+                              .range_m;
+        const double r2 = shoot(sim, azimuth_deg, m2, muzzle_speed_ms, launch_height_m,
+                                target_z_m, 1.0 / 240.0, ascending_detection)
+                              .range_m;
+        if (r1 < r2)
+            lo_deg = m1;
+        else
+            hi_deg = m2;
     }
     const double theta = (lo_deg + hi_deg) * 0.5;
-    const double r_max = shoot(sim, azimuth_deg, theta, muzzle_speed_ms, launch_height_m, target_z_m).range_m;
+    const double r_max = shoot(sim, azimuth_deg, theta, muzzle_speed_ms, launch_height_m,
+                               target_z_m, 1.0 / 240.0, ascending_detection)
+                             .range_m;
     return {theta, r_max};
 }
 
@@ -155,16 +191,14 @@ std::pair<double, double> find_max_range_angle(
 // solve_elevation
 // ---------------------------------------------------------------------------
 
-FireSolution solve_elevation(
-    const TrajectorySimulator& sim,
-    LauncherOrientation        orientation,
-    double                     range_m,
-    double                     muzzle_speed_ms,
-    double                     launch_height_m,
-    bool                       high_angle,
-    double                     tolerance_m,
-    double                     target_altitude_m)
-{
+FireSolution solve_elevation(const TrajectorySimulator& sim,
+                             LauncherOrientation        orientation,
+                             double                     range_m,
+                             double                     muzzle_speed_ms,
+                             double                     launch_height_m,
+                             bool                       high_angle,
+                             double                     tolerance_m,
+                             double                     target_altitude_m) {
     if (muzzle_speed_ms <= 0.0)
         throw std::invalid_argument("muzzle_speed_ms must be positive");
 
@@ -177,67 +211,89 @@ FireSolution solve_elevation(
     // Extending to −87° makes the bound symmetric with the upper limit and
     // accommodates any realistic launcher-above-target geometry.
     constexpr double kLoSearch = -87.0;
-    constexpr double kHiSearch =  87.0;
+    constexpr double kHiSearch = 87.0;
 
     const double az = orientation.azimuth_deg;
 
-    // When the launcher is below the target the only reachable solutions are
-    // ascending crossings of the target plane.  The ascending-crossing range
-    // decreases monotonically with elevation above theta_max — identical
-    // monotonicity to the high-angle descending case.  Override the search
-    // mode so the bracket and bisection direction are correct automatically.
-    const bool ascending_mode   = (launch_height_m < 0.0);
-    const bool effective_hi_ang = high_angle || ascending_mode;
+    // Bisection helper: given a fixed detection mode and search interval,
+    // returns the best FireSolution found (invalid if error > 50×tolerance).
+    // effective_hi_ang=false → low-angle search [lo_bound, theta_max].
+    // effective_hi_ang=true  → high-angle search [theta_max, hi_bound].
+    auto bisect = [&](bool asc_detect, bool eff_hi_ang) -> FireSolution {
+        auto [theta_max, r_max] = find_max_range_angle(sim,
+                                                       az,
+                                                       muzzle_speed_ms,
+                                                       launch_height_m,
+                                                       kLoSearch,
+                                                       kHiSearch,
+                                                       target_altitude_m,
+                                                       60,
+                                                       asc_detect);
+        if (range_m > r_max)
+            return {};
 
-    auto [theta_max, r_max] =
-        find_max_range_angle(sim, az, muzzle_speed_ms, launch_height_m,
-                             kLoSearch, kHiSearch, target_altitude_m);
+        double lo = eff_hi_ang ? theta_max : kLoSearch;
+        double hi = eff_hi_ang ? kHiSearch : theta_max;
 
-    if (range_m > r_max) return {};
+        double best_elev = (lo + hi) * 0.5;
+        double best_time = 0.0;
+        double best_err  = std::numeric_limits<double>::max();
 
-    double lo = effective_hi_ang ? theta_max : kLoSearch;
-    double hi = effective_hi_ang ? kHiSearch : theta_max;
+        for (int i = 0; i < 60; ++i) {
+            const double mid  = (lo + hi) * 0.5;
+            const auto   shot = shoot(sim,
+                                      az,
+                                      mid,
+                                      muzzle_speed_ms,
+                                      launch_height_m,
+                                      target_altitude_m,
+                                      1.0 / 240.0,
+                                      asc_detect);
 
-    // Track the best result seen so far (minimum range error).
-    // This ensures we return the closest solution even if the bisection
-    // exhausts its iteration budget without reaching tolerance_m.
-    double best_elev = (lo + hi) * 0.5;
-    double best_time = 0.0;
-    double best_err  = std::numeric_limits<double>::max();
+            const double err = std::abs(shot.range_m - range_m);
+            if (err < best_err) {
+                best_err  = err;
+                best_elev = mid;
+                best_time = shot.time_s;
+            }
+            if (err <= tolerance_m)
+                break;
 
-    for (int i = 0; i < 60; ++i) {
-        const double mid  = (lo + hi) * 0.5;
-        const auto   shot = shoot(sim, az, mid, muzzle_speed_ms,
-                                  launch_height_m, target_altitude_m);
-
-        const double err = std::abs(shot.range_m - range_m);
-        if (err < best_err) {
-            best_err  = err;
-            best_elev = mid;
-            best_time = shot.time_s;
+            if (!eff_hi_ang) {
+                if (shot.range_m < range_m) lo = mid; else hi = mid;
+            } else {
+                if (shot.range_m > range_m) lo = mid; else hi = mid;
+            }
         }
 
-        if (err <= tolerance_m) break;
+        if (best_err > tolerance_m * 50.0)
+            return {};
+        return FireSolution{best_elev, best_time * 1000.0, true};
+    };
 
-        // Bisection direction:
-        //   normal low-angle  : range increases with elevation → standard
-        //   high-angle or
-        //   ascending mode    : range decreases with elevation → inverted
-        if (!effective_hi_ang) {
-            if (shot.range_m < range_m) lo = mid; else hi = mid;
-        } else {
-            if (shot.range_m > range_m) lo = mid; else hi = mid;
-        }
-    }
+    // high_angle=true: plunging fire — descending detection, above-theta_max
+    // search.  Used for intentional high-angle indirect fire.
+    if (high_angle)
+        return bisect(/*asc_detect=*/false, /*eff_hi_ang=*/true);
 
-    // Guard: if the bisection never brought the range error within 50× the
-    // requested tolerance, the target range is not achievable at the given
-    // target altitude.  Returning valid=false in this case is correct;
-    // callers should use a FireControlTable to find the achievable envelope.
-    if (best_err > tolerance_m * 50.0)
-        return {};
+    // high_angle=false: prefer the natural low-angle direct-fire trajectory
+    // (descending detection, below-theta_max search).  This handles both the
+    // launcher-above-target case and the launcher-slightly-below-target case
+    // where the bullet arcs above target altitude and descends to it.
+    //
+    // If descending detection cannot reach the requested range (e.g. the
+    // target is far above the launcher and the minimum descending-crossing
+    // range is larger than range_m), fall back to ascending detection.  That
+    // mode finds the short-range solution where the bullet clips target
+    // altitude on the way up.
+    if (FireSolution sol = bisect(/*asc_detect=*/false, /*eff_hi_ang=*/false); sol.valid)
+        return sol;
 
-    return FireSolution{best_elev, best_time * 1000.0, true};
+    // Ascending-detection fallback (launcher below target, short range).
+    if (launch_height_m < 0.0)
+        return bisect(/*asc_detect=*/true, /*eff_hi_ang=*/true);
+
+    return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -254,16 +310,14 @@ FireSolution solve_elevation(
 // point's bearing from the launcher changes as the lead grows.
 // ---------------------------------------------------------------------------
 
-InterceptSolution solve_moving_target(
-    const TrajectorySimulator& sim,
-    const Vec3&                launcher_pos,
-    const Vec3&                target_pos,
-    const Vec3&                target_velocity,
-    double                     muzzle_speed_ms,
-    bool                       high_angle,
-    double                     tolerance_m,
-    int                        max_iterations)
-{
+InterceptSolution solve_moving_target(const TrajectorySimulator& sim,
+                                      const Vec3&                launcher_pos,
+                                      const Vec3&                target_pos,
+                                      const Vec3&                target_velocity,
+                                      double                     muzzle_speed_ms,
+                                      bool                       high_angle,
+                                      double                     tolerance_m,
+                                      int                        max_iterations) {
     if (muzzle_speed_ms <= 0.0)
         throw std::invalid_argument("muzzle_speed_ms must be positive");
 
@@ -272,21 +326,22 @@ InterceptSolution solve_moving_target(
     const double dy0  = target_pos.y - launcher_pos.y;
     const double rng0 = std::sqrt(dx0 * dx0 + dy0 * dy0);
 
-    if (rng0 < 1.0) return {}; // launcher and target essentially co-located
+    if (rng0 < 1.0)
+        return {}; // launcher and target essentially co-located
 
-    const double az0 = std::atan2(dx0, dy0) * kRadToDeg;
-    const double lh0 = launcher_pos.z - target_pos.z;
+    const double        az0 = std::atan2(dx0, dy0) * kRadToDeg;
+    const double        lh0 = launcher_pos.z - target_pos.z;
 
     LauncherOrientation orient0;
     orient0.azimuth_deg = az0;
 
-    FireSolution fs0 = solve_elevation(sim, orient0, rng0, muzzle_speed_ms,
-                                       lh0, high_angle, tolerance_m,
-                                       target_pos.z);
-    if (!fs0.valid) return {}; // target already out of range
+    FireSolution fs0 = solve_elevation(
+        sim, orient0, rng0, muzzle_speed_ms, lh0, high_angle, tolerance_m, target_pos.z);
+    if (!fs0.valid)
+        return {}; // target already out of range
 
     // Convergence loop
-    double flight_time_s = fs0.flight_time_ms / 1000.0;
+    double       flight_time_s = fs0.flight_time_ms / 1000.0;
 
     FireSolution best_sol = fs0;
     double       best_az  = az0;
@@ -295,28 +350,28 @@ InterceptSolution solve_moving_target(
 
     for (int iter = 0; iter < max_iterations; ++iter) {
         // --- Step 2: project target position --------------------------------
-        const Vec3 ipt = {
-            target_pos.x + target_velocity.x * flight_time_s,
-            target_pos.y + target_velocity.y * flight_time_s,
-            target_pos.z + target_velocity.z * flight_time_s
-        };
+        const Vec3 ipt = {target_pos.x + target_velocity.x * flight_time_s,
+                          target_pos.y + target_velocity.y * flight_time_s,
+                          target_pos.z + target_velocity.z * flight_time_s};
 
         // --- Step 3: solve to the projected intercept point -----------------
         const double dx  = ipt.x - launcher_pos.x;
         const double dy  = ipt.y - launcher_pos.y;
         const double rng = std::sqrt(dx * dx + dy * dy);
 
-        if (rng < 1.0) return {}; // intercept collapsed onto launcher
+        if (rng < 1.0)
+            return {}; // intercept collapsed onto launcher
 
-        const double az = std::atan2(dx, dy) * kRadToDeg;
-        const double lh = launcher_pos.z - ipt.z;
+        const double        az = std::atan2(dx, dy) * kRadToDeg;
+        const double        lh = launcher_pos.z - ipt.z;
 
         LauncherOrientation orient;
         orient.azimuth_deg = az;
 
-        FireSolution fs = solve_elevation(sim, orient, rng, muzzle_speed_ms,
-                                          lh, high_angle, tolerance_m, ipt.z);
-        if (!fs.valid) return {}; // intercept point is out of range
+        FireSolution fs =
+            solve_elevation(sim, orient, rng, muzzle_speed_ms, lh, high_angle, tolerance_m, ipt.z);
+        if (!fs.valid)
+            return {}; // intercept point is out of range
 
         const double new_tof = fs.flight_time_ms / 1000.0;
 
@@ -326,23 +381,24 @@ InterceptSolution solve_moving_target(
         best_itr = iter + 1;
 
         // --- Step 4: check convergence (1 ms threshold) ---------------------
-        if (std::abs(new_tof - flight_time_s) < 0.001) break;
+        if (std::abs(new_tof - flight_time_s) < 0.001)
+            break;
 
         flight_time_s = new_tof;
     }
 
     // Compute horizontal lead distance
-    const double ldx = best_ipt.x - target_pos.x;
-    const double ldy = best_ipt.y - target_pos.y;
-    const double lead = std::sqrt(ldx * ldx + ldy * ldy);
+    const double      ldx  = best_ipt.x - target_pos.x;
+    const double      ldy  = best_ipt.y - target_pos.y;
+    const double      lead = std::sqrt(ldx * ldx + ldy * ldy);
 
     InterceptSolution result;
-    result.fire           = best_sol;
-    result.azimuth_deg    = best_az;
+    result.fire            = best_sol;
+    result.azimuth_deg     = best_az;
     result.intercept_point = best_ipt;
     result.lead_distance_m = lead;
-    result.iterations     = best_itr;
-    result.valid          = true;
+    result.iterations      = best_itr;
+    result.valid           = true;
     return result;
 }
 
@@ -360,19 +416,17 @@ InterceptSolution solve_moving_target(
 // Convergence is fast (≤ 5 iterations) for typical tactical scenarios.
 // ---------------------------------------------------------------------------
 
-InterceptSolution solve_moving_target_slewed(
-    const TrajectorySimulator& sim,
-    const Vec3&                launcher_pos,
-    double                     current_azimuth_deg,
-    double                     current_elevation_deg,
-    const Vec3&                target_pos,
-    const Vec3&                target_velocity,
-    double                     muzzle_speed_ms,
-    const LauncherSlew&        slew,
-    bool                       high_angle,
-    double                     tolerance_m,
-    int                        max_iterations)
-{
+InterceptSolution solve_moving_target_slewed(const TrajectorySimulator& sim,
+                                             const Vec3&                launcher_pos,
+                                             double                     current_azimuth_deg,
+                                             double                     current_elevation_deg,
+                                             const Vec3&                target_pos,
+                                             const Vec3&                target_velocity,
+                                             double                     muzzle_speed_ms,
+                                             const LauncherSlew&        slew,
+                                             bool                       high_angle,
+                                             double                     tolerance_m,
+                                             int                        max_iterations) {
     if (muzzle_speed_ms <= 0.0)
         throw std::invalid_argument("muzzle_speed_ms must be positive");
 
@@ -384,40 +438,45 @@ InterceptSolution solve_moving_target_slewed(
 
     // Time for the launcher to slew from current orientation to (target_az, target_el).
     auto slew_time_for = [&](double target_az, double target_el) -> double {
-        const double t_yaw   = (slew.yaw_deg_per_s   > 0.0)
-            ? az_delta(current_azimuth_deg,   target_az)                  / slew.yaw_deg_per_s
-            : 0.0;
-        const double t_pitch = (slew.pitch_deg_per_s > 0.0)
-            ? std::abs(current_elevation_deg - target_el) / slew.pitch_deg_per_s
-            : 0.0;
+        const double t_yaw = (slew.yaw_deg_per_s > 0.0)
+                                 ? az_delta(current_azimuth_deg, target_az) / slew.yaw_deg_per_s
+                                 : 0.0;
+        const double t_pitch =
+            (slew.pitch_deg_per_s > 0.0)
+                ? std::abs(current_elevation_deg - target_el) / slew.pitch_deg_per_s
+                : 0.0;
         return std::max(t_yaw, t_pitch);
     };
 
-    double           ts   = 0.0;   // current slew-time estimate (seconds)
+    double            ts = 0.0; // current slew-time estimate (seconds)
     InterceptSolution best;
 
     for (int iter = 0; iter <= max_iterations; ++iter) {
         // Project target to where it will be when the launcher finishes slewing.
-        const Vec3 fire_pos = {
-            target_pos.x + target_velocity.x * ts,
-            target_pos.y + target_velocity.y * ts,
-            target_pos.z + target_velocity.z * ts
-        };
+        const Vec3 fire_pos = {target_pos.x + target_velocity.x * ts,
+                               target_pos.y + target_velocity.y * ts,
+                               target_pos.z + target_velocity.z * ts};
 
         // Solve intercept from that deferred fire position.
-        InterceptSolution isol = solve_moving_target(
-            sim, launcher_pos, fire_pos, target_velocity,
-            muzzle_speed_ms, high_angle, tolerance_m, max_iterations);
+        InterceptSolution isol = solve_moving_target(sim,
+                                                     launcher_pos,
+                                                     fire_pos,
+                                                     target_velocity,
+                                                     muzzle_speed_ms,
+                                                     high_angle,
+                                                     tolerance_m,
+                                                     max_iterations);
 
-        if (!isol.valid) return {};
+        if (!isol.valid)
+            return {};
 
         // Update slew estimate from the newly computed firing angles.
-        const double ts_new = slew_time_for(isol.azimuth_deg,
-                                             isol.fire.elevation_deg);
-        isol.slew_time_s = ts_new;
-        best = isol;
+        const double ts_new = slew_time_for(isol.azimuth_deg, isol.fire.elevation_deg);
+        isol.slew_time_s    = ts_new;
+        best                = isol;
 
-        if (std::abs(ts_new - ts) < 0.01) break;  // converged (10 ms threshold)
+        if (std::abs(ts_new - ts) < 0.01)
+            break; // converged (10 ms threshold)
         ts = ts_new;
     }
 
@@ -439,41 +498,43 @@ InterceptSolution solve_moving_target_slewed(
 // at lookup absorbs the small additional error.
 // ---------------------------------------------------------------------------
 
-void FireControlTable::build(
-    const TrajectorySimulator& sim,
-    double muzzle_speed_ms,
-    double azimuth_deg,
-    double launch_height_m,
-    bool   high_angle,
-    int    num_samples,
-    double target_altitude_m)
-{
+void FireControlTable::build(const TrajectorySimulator& sim,
+                             double                     muzzle_speed_ms,
+                             double                     azimuth_deg,
+                             double                     launch_height_m,
+                             bool                       high_angle,
+                             int                        num_samples,
+                             double                     target_altitude_m) {
     if (muzzle_speed_ms <= 0.0)
         throw std::invalid_argument("muzzle_speed_ms must be positive");
-    if (num_samples < 2) num_samples = 2;
+    if (num_samples < 2)
+        num_samples = 2;
 
     // Symmetric bounds (see solve_elevation for the rationale behind −87°).
     constexpr double kLoSearch = -87.0;
-    constexpr double kHiSearch =  87.0;
+    constexpr double kHiSearch = 87.0;
 
     // Use a coarser dt during the sweep — accurate enough for table use
     constexpr double kBuildDt = 1.0 / 120.0;
 
-    // When the launcher is below the target, ascending-crossing ranges decrease
-    // with elevation (same monotonicity as high-angle descending fire).
-    // Use the high-angle sweep bounds and monotone filter automatically.
-    const bool ascending_mode   = (launch_height_m < 0.0);
-    const bool effective_hi_ang = high_angle || ascending_mode;
+    // Detection mode mirrors solve_elevation:
+    //   high_angle=true  → descending detection, sweep above theta_max (plunging fire)
+    //   high_angle=false → descending detection, sweep below theta_max (direct fire)
+    // Ascending detection is not used in the table; solve_elevation handles the
+    // short-range ascending-path fallback internally.
+    const bool ascending_detection = false;
+    const bool effective_hi_ang    = high_angle;
 
     // --- Step 1: quick ternary search for theta_max (20 iterations = 40 sims) ---
-    // This concentrates all num_samples in the relevant half of the angle range,
-    // giving ~num_samples entries rather than wasting most on the discarded half.
-    // Note: uses kBuildDt resolution; a slight theta_max error is tolerated
-    // because the monotone filter in step 3 absorbs it.
-    auto [theta_max_sb, r_max_unused] =
-        find_max_range_angle(sim, azimuth_deg, muzzle_speed_ms, launch_height_m,
-                             kLoSearch, kHiSearch, target_altitude_m,
-                             /*iterations=*/20);
+    auto [theta_max_sb, r_max_unused] = find_max_range_angle(sim,
+                                                             azimuth_deg,
+                                                             muzzle_speed_ms,
+                                                             launch_height_m,
+                                                             kLoSearch,
+                                                             kHiSearch,
+                                                             target_altitude_m,
+                                                             /*iterations=*/20,
+                                                             ascending_detection);
     (void)r_max_unused;
     // Copy out of the structured binding into a plain variable.
     // C++17 does not allow lambdas to capture structured bindings directly;
@@ -481,47 +542,51 @@ void FireControlTable::build(
     const double theta_max = theta_max_sb;
 
     // Determine the effective lower bound of the sweep by locating the first
-    // angle that yields a positive range.  When the launcher is well above the
-    // target every angle gives a positive range and sweep_lo stays at
-    // kLoSearch.  When the launcher is at or below the target, angles shallower
-    // than the minimum lofting angle produce range=0 (either due to immediate
-    // termination or cannot-reach-target-altitude timeout).  Concentrating the
-    // samples in the useful band preserves look-up accuracy.
-    //
-    // For ascending mode (launcher below target) the sweep starts at theta_max
-    // (the minimum angle that reaches target altitude) and goes up to 87°,
-    // matching the high-angle sweep direction.
-    //
-    // The binary search costs 20 extra trajectory simulations — negligible
-    // versus the num_samples sweep that follows.
+    // angle that yields a positive range.
     const double sweep_lo = [&]() -> double {
-        if (effective_hi_ang) return theta_max;
+        if (effective_hi_ang)
+            return theta_max;
         double lo_bs = kLoSearch, hi_bs = theta_max;
         for (int i = 0; i < 20; ++i) {
             const double mid_bs = (lo_bs + hi_bs) * 0.5;
-            const double r = shoot(sim, azimuth_deg, mid_bs, muzzle_speed_ms,
-                                   launch_height_m, target_altitude_m,
-                                   kBuildDt).range_m;
-            // Narrow toward the first positive-range angle
-            if (r > 0.0) hi_bs = mid_bs;
-            else         lo_bs = mid_bs;
+            const double r      = shoot(sim,
+                                   azimuth_deg,
+                                   mid_bs,
+                                   muzzle_speed_ms,
+                                   launch_height_m,
+                                   target_altitude_m,
+                                   kBuildDt,
+                                   ascending_detection)
+                                 .range_m;
+            if (r > 0.0)
+                hi_bs = mid_bs;
+            else
+                lo_bs = mid_bs;
         }
-        // lo_bs is the highest angle still giving range=0; start the sweep
-        // just below it so the table captures the full low-range end.
         return lo_bs;
     }();
     const double sweep_hi = effective_hi_ang ? kHiSearch : theta_max;
     const double step     = (sweep_hi - sweep_lo) / (num_samples - 1);
 
     // --- Step 2: sweep the selected arc ---
-    struct Raw { double elev; double range; double tof; };
+    struct Raw {
+        double elev;
+        double range;
+        double tof;
+    };
     std::vector<Raw> raw;
     raw.reserve(num_samples);
 
     for (int i = 0; i < num_samples; ++i) {
         const double elev = sweep_lo + i * step;
-        const auto   s    = shoot(sim, azimuth_deg, elev, muzzle_speed_ms,
-                                  launch_height_m, target_altitude_m, kBuildDt);
+        const auto   s    = shoot(sim,
+                               azimuth_deg,
+                               elev,
+                               muzzle_speed_ms,
+                               launch_height_m,
+                               target_altitude_m,
+                               kBuildDt,
+                               ascending_detection);
         raw.push_back({elev, s.range_m, s.time_s});
     }
 
@@ -560,9 +625,10 @@ FireSolution FireControlTable::lookup(double range_m) const {
         return {};
 
     // Binary search for the first entry with range >= range_m
-    auto it = std::lower_bound(
-        entries_.begin(), entries_.end(), range_m,
-        [](const Entry& e, double r) { return e.range_m < r; });
+    auto it =
+        std::lower_bound(entries_.begin(), entries_.end(), range_m, [](const Entry& e, double r) {
+            return e.range_m < r;
+        });
 
     // Below the minimum range stored in the table → no valid solution
     if (it == entries_.begin() && it->range_m != range_m)
@@ -584,11 +650,9 @@ FireSolution FireControlTable::lookup(double range_m) const {
 
     const double t = (range_m - lo.range_m) / span;
 
-    return FireSolution{
-        lo.elevation_deg  + t * (hi.elevation_deg  - lo.elevation_deg),
-        lo.flight_time_ms + t * (hi.flight_time_ms - lo.flight_time_ms),
-        true
-    };
+    return FireSolution{lo.elevation_deg + t * (hi.elevation_deg - lo.elevation_deg),
+                        lo.flight_time_ms + t * (hi.flight_time_ms - lo.flight_time_ms),
+                        true};
 }
 
 // ---------------------------------------------------------------------------

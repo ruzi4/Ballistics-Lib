@@ -23,25 +23,27 @@ namespace ballistics {
 struct MunitionSpec {
     std::string name;
 
-    double mass_kg{0.0};             ///< Projectile mass (kg)
-    double density_kg_m3{0.0};       ///< Material density (kg/m³)
-    double reference_area_m2{0.0};   ///< Cross-sectional reference area (m²)
+    double      mass_kg{0.0};           ///< Projectile mass (kg)
+    double      density_kg_m3{0.0};     ///< Material density (kg/m³)
+    double      reference_area_m2{0.0}; ///< Cross-sectional reference area (m²)
     /// Drag coefficient Cd (dimensionless).
     /// A value of 0.0 is a valid "vacuum" sentinel: it disables aerodynamic
     /// drag entirely.  ballistic_coefficient() returns 0.0 in that case.
     double drag_coefficient{0.0};
-    double muzzle_velocity_ms{0.0};  ///< Muzzle velocity (m/s)
-    double diameter_m{0.0};          ///< Characteristic diameter (m)
+    double muzzle_velocity_ms{0.0}; ///< Muzzle velocity (m/s)
+    double diameter_m{0.0};         ///< Characteristic diameter (m)
 
     /// Ballistic coefficient BC = mass / (Cd × A_ref)  [kg/m²]
     [[nodiscard]] double ballistic_coefficient() const noexcept {
-        if (drag_coefficient == 0.0 || reference_area_m2 == 0.0) return 0.0;
+        if (drag_coefficient == 0.0 || reference_area_m2 == 0.0)
+            return 0.0;
         return mass_kg / (drag_coefficient * reference_area_m2);
     }
 
     /// Volume derived from mass and material density (m³)
     [[nodiscard]] double volume_m3() const noexcept {
-        if (density_kg_m3 == 0.0) return 0.0;
+        if (density_kg_m3 == 0.0)
+            return 0.0;
         return mass_kg / density_kg_m3;
     }
 };

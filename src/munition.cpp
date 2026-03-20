@@ -29,11 +29,11 @@ MunitionSpec parse_spec(const json& obj) {
         throw std::invalid_argument("Munition entry missing 'name' string field");
 
     MunitionSpec spec;
-    spec.name              = obj["name"].get<std::string>();
-    spec.mass_kg           = require_double(obj, "mass_kg");
-    spec.density_kg_m3     = require_double(obj, "density_kg_m3");
-    spec.reference_area_m2 = require_double(obj, "reference_area_m2");
-    spec.drag_coefficient  = require_double(obj, "drag_coefficient");
+    spec.name               = obj["name"].get<std::string>();
+    spec.mass_kg            = require_double(obj, "mass_kg");
+    spec.density_kg_m3      = require_double(obj, "density_kg_m3");
+    spec.reference_area_m2  = require_double(obj, "reference_area_m2");
+    spec.drag_coefficient   = require_double(obj, "drag_coefficient");
     spec.muzzle_velocity_ms = require_double(obj, "muzzle_velocity_ms");
 
     // Optional field
@@ -55,14 +55,13 @@ MunitionSpec parse_spec(const json& obj) {
     return spec;
 }
 
-void merge_from_json(const json& root,
-                     std::unordered_map<std::string, MunitionSpec>& out) {
+void merge_from_json(const json& root, std::unordered_map<std::string, MunitionSpec>& out) {
     if (!root.contains("munitions") || !root["munitions"].is_array())
         throw std::runtime_error("JSON root must contain a 'munitions' array");
 
     for (const auto& entry : root["munitions"]) {
         MunitionSpec spec = parse_spec(entry);
-        out[spec.name] = std::move(spec);
+        out[spec.name]    = std::move(spec);
     }
 }
 
@@ -81,8 +80,7 @@ void MunitionLibrary::load(const std::string& json_path) {
     try {
         file >> root;
     } catch (const json::parse_error& e) {
-        throw std::runtime_error(std::string("JSON parse error in ") + json_path +
-                                 ": " + e.what());
+        throw std::runtime_error(std::string("JSON parse error in ") + json_path + ": " + e.what());
     }
 
     merge_from_json(root, specs_);

@@ -21,17 +21,12 @@ BreakBeforeBraces: Attach
 # -----------------------------------------------------------------------
 # Alignment — match the existing style of aligned declarations
 # -----------------------------------------------------------------------
-AlignConsecutiveAssignments:
-  Enabled:          true
-  AcrossEmptyLines: false
-  AcrossComments:   false
-AlignConsecutiveDeclarations:
-  Enabled:          true
-  AcrossEmptyLines: false
-  AcrossComments:   false
-AlignTrailingComments:
-  Kind:             Always
-  OverEmptyLines:   1
+AllowAllParametersOfDeclarationOnNextLine: false
+AlwaysBreakBeforeMultilineStrings: false
+ConstructorInitializerIndentWidth: 4
+AlignConsecutiveDeclarations: AcrossEmptyLines
+AlignConsecutiveAssignments: Consecutive
+AlignTrailingComments: true
 
 # -----------------------------------------------------------------------
 # Pointer / reference alignment — left (const Vec3& v, not Vec3 &v)

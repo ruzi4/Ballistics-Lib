@@ -1,8 +1,8 @@
 #pragma once
 
+#include "atmosphere.hpp"
 #include "math/vec3.hpp"
 #include "munition.hpp"
-#include "atmosphere.hpp"
 
 #include <functional>
 #include <vector>
@@ -19,9 +19,9 @@ namespace ballistics {
 
 /// Kinematic state of a projectile at one instant in time.
 struct ProjectileState {
-    Vec3   position;   ///< World-space position (m)
-    Vec3   velocity;   ///< World-space velocity (m/s)
-    double time{0.0};  ///< Elapsed simulation time (s)
+    Vec3   position;  ///< World-space position (m)
+    Vec3   velocity;  ///< World-space velocity (m/s)
+    double time{0.0}; ///< Elapsed simulation time (s)
 };
 
 /// Configuration for a full trajectory simulation run.
@@ -83,8 +83,7 @@ using StepCallback = std::function<bool(const ProjectileState&)>;
 class TrajectorySimulator {
 public:
     /// Construct a simulator for @p munition in the given @p atmosphere.
-    TrajectorySimulator(const MunitionSpec&         munition,
-                        const AtmosphericConditions& atmosphere);
+    TrajectorySimulator(const MunitionSpec& munition, const AtmosphericConditions& atmosphere);
 
     // -----------------------------------------------------------------------
     // Real-time interface
@@ -99,16 +98,14 @@ public:
     ///   for (int i = 0; i < 4; ++i)
     ///       state = sim.step(state, sub_dt);
     /// @endcode
-    [[nodiscard]] ProjectileState step(const ProjectileState& state,
-                                       double dt) const noexcept;
+    [[nodiscard]] ProjectileState step(const ProjectileState& state, double dt) const noexcept;
 
     /// Advance @p state forward using RK4 (always, regardless of config).
-    [[nodiscard]] ProjectileState step_rk4(const ProjectileState& state,
-                                            double dt) const noexcept;
+    [[nodiscard]] ProjectileState step_rk4(const ProjectileState& state, double dt) const noexcept;
 
     /// Advance @p state forward using symplectic Euler.
     [[nodiscard]] ProjectileState step_euler(const ProjectileState& state,
-                                              double dt) const noexcept;
+                                             double                 dt) const noexcept;
 
     // -----------------------------------------------------------------------
     // Batch / offline interface
@@ -117,15 +114,15 @@ public:
     /// Run a complete trajectory from @p initial, storing every step.
     /// @returns  All states from initial to landing (inclusive).
     [[nodiscard]]
-    std::vector<ProjectileState> simulate(const ProjectileState& initial,
+    std::vector<ProjectileState> simulate(const ProjectileState&  initial,
                                           const SimulationConfig& cfg) const;
 
     /// Run a complete trajectory, invoking @p callback for each step.
     /// Avoids allocating the full state vector — suitable for real-time
     /// recording or streaming output.
-    void simulate(const ProjectileState& initial,
+    void simulate(const ProjectileState&  initial,
                   const SimulationConfig& cfg,
-                  StepCallback callback) const;
+                  StepCallback            callback) const;
 
     // -----------------------------------------------------------------------
     // Accessors / mutators
@@ -134,21 +131,17 @@ public:
     /// Replace the atmospheric conditions and recompute the drag constant.
     void set_atmosphere(const AtmosphericConditions& atm) noexcept;
 
-    [[nodiscard]] const AtmosphericConditions& atmosphere() const noexcept {
-        return atmosphere_;
-    }
-    [[nodiscard]] const MunitionSpec& munition() const noexcept {
-        return munition_;
-    }
+    [[nodiscard]] const AtmosphericConditions& atmosphere() const noexcept { return atmosphere_; }
+    [[nodiscard]] const MunitionSpec&          munition() const noexcept { return munition_; }
     /// Precomputed drag constant k = ½·Cd·ρ·A/m  (1/m).
     [[nodiscard]] double drag_k() const noexcept { return drag_k_; }
 
 private:
     MunitionSpec          munition_;
     AtmosphericConditions atmosphere_;
-    double                drag_k_{0.0};  ///< Precomputed drag constant
+    double                drag_k_{0.0}; ///< Precomputed drag constant
 
-    void update_drag_k() noexcept;
+    void                  update_drag_k() noexcept;
 
     /// Compute [dpos/dt, dvel/dt] at the given kinematic state.
     /// @param pos   Current position (used for future altitude-varying density)
@@ -164,14 +157,12 @@ private:
     /// Wind is still taken from the stored atmosphere.
     /// Allows simulate() to use an altitude-varying density without
     /// mutating the simulator or copying it.
-    [[nodiscard]] ProjectileState step_rk4_rho(const ProjectileState& state,
-                                                double dt,
-                                                double rho) const noexcept;
+    [[nodiscard]] ProjectileState
+    step_rk4_rho(const ProjectileState& state, double dt, double rho) const noexcept;
 
     /// Symplectic Euler step with a caller-supplied air density.
-    [[nodiscard]] ProjectileState step_euler_rho(const ProjectileState& state,
-                                                  double dt,
-                                                  double rho) const noexcept;
+    [[nodiscard]] ProjectileState
+    step_euler_rho(const ProjectileState& state, double dt, double rho) const noexcept;
 };
 
 } // namespace ballistics
