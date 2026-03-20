@@ -31,15 +31,16 @@ double
 compute_air_density(double temperature_K, double pressure_Pa, double relative_humidity) noexcept {
     // Water vapour pressure via the Magnus formula (Pa)
     // P_sat = 611.657 * exp(17.368*(T-273.15)/(T-273.15+238.88))   [Alduchov 1996]
-    const double T_C   = temperature_K - 273.15;
-    const double P_sat = 611.657 * std::exp(17.368 * T_C / (T_C + 238.88));
-    const double P_v   = relative_humidity * P_sat; // partial vapour pressure
+    const double temp_celsius            = temperature_K - 273.15;
+    const double saturation_pressure_Pa  = 611.657 * std::exp(17.368 * temp_celsius / (temp_celsius + 238.88));
+    const double vapor_pressure_Pa       = relative_humidity * saturation_pressure_Pa;
 
     // Density of moist air (Tetens / Dalton):
     // rho = (P_d * M_d + P_v * M_v) / (R * T)
     // where M_v = 0.018016 kg/mol (water), P_d = P - P_v
-    const double P_d = pressure_Pa - P_v;
-    return (P_d * kMolarMassDryAir + P_v * 0.018016) / (kUniversalGas * temperature_K);
+    const double dry_air_pressure_Pa = pressure_Pa - vapor_pressure_Pa;
+    return (dry_air_pressure_Pa * kMolarMassDryAir + vapor_pressure_Pa * 0.018016) /
+           (kUniversalGas * temperature_K);
 }
 
 // ---------------------------------------------------------------------------
@@ -65,29 +66,28 @@ AtmosphericConditions isa_conditions(double      altitude_m,
 
     if (altitude_m <= kTropopause) {
         // Troposphere: linear temperature lapse
-        const double T     = surface_temp_K - kLapseRate * altitude_m;
-        const double P     = surface_pressure_Pa * std::pow(T / surface_temp_K, kTropoExp);
-        cond.temperature_K = T;
-        cond.pressure_Pa   = P;
+        const double temperature_K = surface_temp_K - kLapseRate * altitude_m;
+        const double pressure_Pa   = surface_pressure_Pa * std::pow(temperature_K / surface_temp_K, kTropoExp);
+        cond.temperature_K         = temperature_K;
+        cond.pressure_Pa           = pressure_Pa;
     } else if (altitude_m <= kStratoPause) {
         // Lower stratosphere: isothermal at 216.65 K
         // Adjust kP11 for non-standard surface conditions
-        const double T11_adj = surface_temp_K - kLapseRate * kTropopause;
-        const double P11_adj = surface_pressure_Pa * std::pow(T11_adj / surface_temp_K, kTropoExp);
+        const double tropopause_temp_K     = surface_temp_K - kLapseRate * kTropopause;
+        const double tropopause_pressure_Pa = surface_pressure_Pa * std::pow(tropopause_temp_K / surface_temp_K, kTropoExp);
 
-        const double T     = kT11;
-        const double P     = P11_adj * std::exp(-kGravity * kMolarMassDryAir *
-                                            (altitude_m - kTropopause) / (kUniversalGas * kT11));
-        cond.temperature_K = T;
-        cond.pressure_Pa   = P;
+        cond.temperature_K = kT11;
+        cond.pressure_Pa   = tropopause_pressure_Pa *
+                             std::exp(-kGravity * kMolarMassDryAir *
+                                      (altitude_m - kTropopause) / (kUniversalGas * kT11));
     } else {
         // Beyond model range — clamp to stratopause value
-        const double T11_adj = surface_temp_K - kLapseRate * kTropopause;
-        const double P11_adj = surface_pressure_Pa * std::pow(T11_adj / surface_temp_K, kTropoExp);
-        cond.temperature_K   = kT11;
-        cond.pressure_Pa =
-            P11_adj * std::exp(-kGravity * kMolarMassDryAir * (kStratoPause - kTropopause) /
-                               (kUniversalGas * kT11));
+        const double tropopause_temp_K      = surface_temp_K - kLapseRate * kTropopause;
+        const double tropopause_pressure_Pa = surface_pressure_Pa * std::pow(tropopause_temp_K / surface_temp_K, kTropoExp);
+        cond.temperature_K                  = kT11;
+        cond.pressure_Pa                    = tropopause_pressure_Pa *
+                                              std::exp(-kGravity * kMolarMassDryAir * (kStratoPause - kTropopause) /
+                                                       (kUniversalGas * kT11));
     }
 
     cond.recompute_density();

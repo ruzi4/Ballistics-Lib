@@ -144,12 +144,12 @@ private:
     void                  update_drag_k() noexcept;
 
     /// Compute [dpos/dt, dvel/dt] at the given kinematic state.
-    /// @param pos   Current position (used for future altitude-varying density)
-    /// @param vel   Current velocity (m/s)
-    /// @param rho   Air density at this instant (kg/m³)
+    /// @param pos                Current position (used for future altitude-varying density)
+    /// @param vel                Current velocity (m/s)
+    /// @param air_density_kg_m3  Air density at this instant (kg/m³)
     void derivatives(const Vec3& pos,
                      const Vec3& vel,
-                     double      rho,
+                     double      air_density_kg_m3,
                      Vec3&       dpos_dt,
                      Vec3&       dvel_dt) const noexcept;
 
@@ -158,11 +158,11 @@ private:
     /// Allows simulate() to use an altitude-varying density without
     /// mutating the simulator or copying it.
     [[nodiscard]] ProjectileState
-    step_rk4_rho(const ProjectileState& state, double dt, double rho) const noexcept;
+    step_rk4_rho(const ProjectileState& state, double dt, double air_density_kg_m3) const noexcept;
 
     /// Symplectic Euler step with a caller-supplied air density.
     [[nodiscard]] ProjectileState
-    step_euler_rho(const ProjectileState& state, double dt, double rho) const noexcept;
+    step_euler_rho(const ProjectileState& state, double dt, double air_density_kg_m3) const noexcept;
 };
 
 } // namespace ballistics

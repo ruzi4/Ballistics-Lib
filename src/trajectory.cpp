@@ -47,7 +47,7 @@ void TrajectorySimulator::set_atmosphere(const AtmosphericConditions& atm) noexc
 //   drag_accel = -k · |v_rel| · v_rel   where v_rel = vel − wind
 void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
                                       const Vec3& vel,
-                                      double      rho,
+                                      double      air_density_kg_m3,
                                       Vec3&       dpos_dt,
                                       Vec3&       dvel_dt) const noexcept {
     dpos_dt = vel;
@@ -61,21 +61,23 @@ void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
     }
 
     // Velocity relative to the wind
-    const Vec3   v_rel    = vel - atmosphere_.wind.velocity_ms;
-    const double v_rel_sq = v_rel.norm_sq();
+    const Vec3   relative_velocity_ms    = vel - atmosphere_.wind.velocity_ms;
+    const double relative_speed_sq_m2s2  = relative_velocity_ms.norm_sq();
 
     // Drag: a_drag = -k_rho · |v_rel| · v_rel
     // Scale the precomputed drag_k_ (which uses the fixed atmosphere density)
-    // by the ratio rho / rho_fixed.  This avoids re-reading three munition
-    // fields and saves 2 multiplications per derivatives() call (= 8 per RK4
-    // step).  Falls back to zero when rho_fixed == 0 (vacuum atmosphere).
-    const double rho_fixed = atmosphere_.air_density_kg_m3;
-    const double k_rho     = (rho_fixed > 0.0) ? drag_k_ * (rho / rho_fixed) : 0.0;
+    // by the ratio air_density / reference_density.  This avoids re-reading
+    // three munition fields and saves 2 multiplications per derivatives() call
+    // (= 8 per RK4 step).  Falls back to zero when reference_density == 0 (vacuum).
+    const double reference_density_kg_m3  = atmosphere_.air_density_kg_m3;
+    const double drag_constant_scaled_1_per_m = (reference_density_kg_m3 > 0.0)
+                                                    ? drag_k_ * (air_density_kg_m3 / reference_density_kg_m3)
+                                                    : 0.0;
 
-    const double v_rel_mag = std::sqrt(v_rel_sq);
-    const Vec3   drag_acc  = -(k_rho * v_rel_mag) * v_rel;
+    const double relative_speed_ms    = std::sqrt(relative_speed_sq_m2s2);
+    const Vec3   drag_acceleration_ms2 = -(drag_constant_scaled_1_per_m * relative_speed_ms) * relative_velocity_ms;
 
-    dvel_dt = Vec3{0.0, 0.0, kGravity} + drag_acc;
+    dvel_dt = Vec3{0.0, 0.0, kGravity} + drag_acceleration_ms2;
 }
 
 // ---------------------------------------------------------------------------
@@ -83,28 +85,28 @@ void TrajectorySimulator::derivatives(const Vec3& /*pos*/,
 // ---------------------------------------------------------------------------
 
 ProjectileState
-TrajectorySimulator::step_rk4_rho(const ProjectileState& s, double dt, double rho) const noexcept {
-    Vec3 dp, dv;
+TrajectorySimulator::step_rk4_rho(const ProjectileState& s, double dt, double air_density_kg_m3) const noexcept {
+    Vec3 dpos_dt, dvel_dt;
 
     // k1
-    derivatives(s.position, s.velocity, rho, dp, dv);
-    const Vec3 k1_p = dp;
-    const Vec3 k1_v = dv;
+    derivatives(s.position, s.velocity, air_density_kg_m3, dpos_dt, dvel_dt);
+    const Vec3 k1_p = dpos_dt;
+    const Vec3 k1_v = dvel_dt;
 
     // k2
-    derivatives(s.position + 0.5 * dt * k1_p, s.velocity + 0.5 * dt * k1_v, rho, dp, dv);
-    const Vec3 k2_p = dp;
-    const Vec3 k2_v = dv;
+    derivatives(s.position + 0.5 * dt * k1_p, s.velocity + 0.5 * dt * k1_v, air_density_kg_m3, dpos_dt, dvel_dt);
+    const Vec3 k2_p = dpos_dt;
+    const Vec3 k2_v = dvel_dt;
 
     // k3
-    derivatives(s.position + 0.5 * dt * k2_p, s.velocity + 0.5 * dt * k2_v, rho, dp, dv);
-    const Vec3 k3_p = dp;
-    const Vec3 k3_v = dv;
+    derivatives(s.position + 0.5 * dt * k2_p, s.velocity + 0.5 * dt * k2_v, air_density_kg_m3, dpos_dt, dvel_dt);
+    const Vec3 k3_p = dpos_dt;
+    const Vec3 k3_v = dvel_dt;
 
     // k4
-    derivatives(s.position + dt * k3_p, s.velocity + dt * k3_v, rho, dp, dv);
-    const Vec3      k4_p = dp;
-    const Vec3      k4_v = dv;
+    derivatives(s.position + dt * k3_p, s.velocity + dt * k3_v, air_density_kg_m3, dpos_dt, dvel_dt);
+    const Vec3      k4_p = dpos_dt;
+    const Vec3      k4_v = dvel_dt;
 
     const double    dt_sixth = dt / 6.0;
     ProjectileState next;
@@ -116,13 +118,13 @@ TrajectorySimulator::step_rk4_rho(const ProjectileState& s, double dt, double rh
 
 ProjectileState TrajectorySimulator::step_euler_rho(const ProjectileState& s,
                                                     double                 dt,
-                                                    double                 rho) const noexcept {
-    Vec3 dp, dv;
-    derivatives(s.position, s.velocity, rho, dp, dv);
+                                                    double                 air_density_kg_m3) const noexcept {
+    Vec3 dpos_dt, dvel_dt;
+    derivatives(s.position, s.velocity, air_density_kg_m3, dpos_dt, dvel_dt);
 
     ProjectileState next;
     // Symplectic Euler: update velocity first, then position with new velocity
-    next.velocity = s.velocity + dt * dv;
+    next.velocity = s.velocity + dt * dvel_dt;
     next.position = s.position + dt * next.velocity;
     next.time     = s.time + dt;
     return next;
@@ -178,24 +180,27 @@ void TrajectorySimulator::simulate(const ProjectileState&  initial,
 
         // Resolve air density for this step (altitude-varying if requested).
         // Wind is always taken from the simulator's stored atmosphere.
-        const double rho = cfg.atmosphere_fn ? cfg.atmosphere_fn(state.position.z).air_density_kg_m3
-                                             : atmosphere_.air_density_kg_m3;
+        const double step_air_density_kg_m3 = cfg.atmosphere_fn
+                                                  ? cfg.atmosphere_fn(state.position.z).air_density_kg_m3
+                                                  : atmosphere_.air_density_kg_m3;
 
         ProjectileState next;
         if (cfg.use_rk4) {
-            next = step_rk4_rho(state, dt, rho);
+            next = step_rk4_rho(state, dt, step_air_density_kg_m3);
         } else {
-            next = step_euler_rho(state, dt, rho);
+            next = step_euler_rho(state, dt, step_air_density_kg_m3);
         }
 
         // Ground intersection: linearly interpolate to the exact crossing time
         if (next.position.z <= cfg.ground_z && state.position.z > cfg.ground_z) {
-            const double    dz   = state.position.z - next.position.z;
-            const double    frac = (dz > 0.0) ? (state.position.z - cfg.ground_z) / dz : 0.0;
+            const double    altitude_delta_m      = state.position.z - next.position.z;
+            const double    ground_crossing_frac  = (altitude_delta_m > 0.0)
+                                                        ? (state.position.z - cfg.ground_z) / altitude_delta_m
+                                                        : 0.0;
             ProjectileState impact;
-            impact.position   = state.position + frac * (next.position - state.position);
-            impact.velocity   = state.velocity + frac * (next.velocity - state.velocity);
-            impact.time       = state.time + frac * dt;
+            impact.position   = state.position + ground_crossing_frac * (next.position - state.position);
+            impact.velocity   = state.velocity + ground_crossing_frac * (next.velocity - state.velocity);
+            impact.time       = state.time + ground_crossing_frac * dt;
             impact.position.z = cfg.ground_z; // clamp exactly to ground
             callback(impact);
             return;
